@@ -1,0 +1,11 @@
+{
+  "name": "promptvault",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PromptVault · 离线图片提示词管理台（纯原生 HTML/CSS/ES Module）",
+  "scripts": {
+    "start": "python -m http.server 8899",
+    "check": "node --check js/main.js"
+  }
+}

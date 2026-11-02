@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>PromptVault · 图片提示词管理台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6fed'/%3E%3Cpath d='M9 23V9h7a4.5 4.5 0 0 1 0 9h-4' stroke='%23fff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ===================== 顶栏 ===================== -->
+    <header id="topbar">
+      <button class="icon-btn" id="btn-sidebar" type="button" title="折叠 / 展开侧栏"></button>
+
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">PromptVault</span>
+        <span class="brand-sub">图片提示词管理台</span>
+      </div>
+
+      <div class="search-wrap">
+        <span class="search-icon" aria-hidden="true"></span>
+        <input id="search-input" class="search-input" type="search"
+               placeholder="搜索提示词 / 名称 / 标签（按 / 聚焦）"
+               autocomplete="off" spellcheck="false">
+        <button class="icon-btn search-clear" id="btn-search-clear" type="button" title="清空搜索"></button>
+      </div>
+
+      <div class="segmented" id="view-switch">
+        <button class="seg-btn" type="button" data-view="gallery"></button>
+        <button class="seg-btn" type="button" data-view="database"></button>
+      </div>
+
+      <div class="top-actions">
+        <button class="btn" id="btn-quick-import" type="button"></button>
+        <button class="btn" id="btn-import" type="button"></button>
+        <button class="btn" id="btn-export" type="button"></button>
+        <button class="icon-btn" id="btn-theme" type="button" title="切换深浅主题"></button>
+      </div>
+    </header>
+
+    <!-- ===================== 降级警告条 ===================== -->
+    <div id="warn-bar" class="warn-bar" hidden></div>
+
+    <!-- ===================== 主体三栏 ===================== -->
+    <main id="layout">
+      <aside id="sidebar" class="sidebar"></aside>
+      <section id="content" class="content">
+        <div id="view-gallery" class="view"></div>
+        <div id="view-database" class="view" hidden></div>
+        <div id="view-loras" class="view" hidden></div>
+        <div id="view-edits" class="view" hidden></div>
+        <div id="view-assets" class="view" hidden></div>
+        <div id="view-prompts" class="view" hidden></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ===================== 浮层容器 ===================== -->
+  <div id="loading" class="loading">
+    <div class="spinner" aria-hidden="true"></div>
+    <div class="loading-text">正在加载图库…</div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-host" class="toast-host"></div>
+  <div id="popover-root"></div>
+  <div id="drop-overlay" class="drop-overlay" hidden>
+    <div class="drop-hint">
+      <strong>松开鼠标即可导入图片</strong>
+      <span>支持同时拖入 .txt / .json 配对提示词文件</span>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

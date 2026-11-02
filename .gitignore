@@ -1,0 +1,26 @@
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# 依赖（本项目零依赖，此规则用于防止误提交）
+node_modules/
+package-lock.json
+
+# 构建产物
+dist/
+build/
+*.log
+
+# 本地测试与临时文件
+.qa-tmp/
+*.tmp
+*.bak
+
+# 导出的数据（含图片，体积大且属于个人数据）
+*.promptvault.json
+export-*.json
+export-*.csv
