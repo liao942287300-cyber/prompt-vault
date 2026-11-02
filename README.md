@@ -6,6 +6,8 @@
 > 适合管理 AI 出图（Stable Diffusion / Midjourney / 即梦 / 可灵等）产生的图片与提示词。
 > 支持从 Word 文档批量导入「图片 + 提示词」，并自动按提示词内容推断分类。
 
+![图库界面](screenshots/gallery.jpg)
+
 ---
 
 ## 目录
@@ -122,6 +124,8 @@ npx --yes serve -l 8899 .
 | **资产图** | 角色四视图 / 场景 / 道具 / 分镜 | **原图存储，不压缩**；可拖到资源管理器或聊天窗口 |
 | **LLM 系统提示词模板** | system prompt 纯文本 | 存角色设定、输出格式约束这类长期复用的指令 |
 
+<img src="screenshots/assets.jpg" width="760" alt="资产图模块">
+
 ### 键盘快捷键
 
 | 快捷键 | 作用 |
@@ -134,6 +138,11 @@ npx --yes serve -l 8899 .
 ---
 
 ## 导入方式
+
+导入入口一共四个：Word 文档、普通图片、快速导入、PNG 内嵌。
+分类那一栏默认开着自动推断，不选也能导 —— 推断不出来才用左栏当前筛选兜底。
+
+<p align="center"><img src="screenshots/import-dialog.jpg" width="400" alt="导入弹窗"></p>
 
 ### 1. Word 文档导入（推荐批量用）
 
