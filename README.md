@@ -21,6 +21,7 @@
 - [提示词配对文件](#提示词配对文件)
 - [数据模型](#数据模型)
 - [目录结构](#目录结构)
+- [桌面版](#桌面版)
 - [技术说明](#技术说明)
 - [浏览器要求](#浏览器要求)
 - [开发](#开发)
@@ -104,6 +105,8 @@ npx --yes serve -l 8899 .
 ```
 
 然后浏览器访问 <http://localhost:8899/>。
+
+> 不想装 Python / Node，也不想开命令行？用 [桌面版](#桌面版)，双击 exe 就能用。
 
 ---
 
@@ -333,6 +336,13 @@ prompt-vault/
 ├─ start.sh                macOS / Linux 一键启动
 ├─ css/
 │  └─ styles.css           全部样式（CSS 变量驱动的深浅双主题，约 1700 行）
+├─ desktop/                Electron 桌面版（可选，见下方「桌面版」）
+│  ├─ main.js              主进程：窗口、自定义 app:// 协议、单实例锁
+│  ├─ preload.js           预加载脚本
+│  ├─ scripts/
+│  │  ├─ sync-renderer.mjs 把上级目录的网页版同步到 renderer/
+│  │  └─ make-icon.py      纯 Python 标准库生成 .ico
+│  └─ README.md            桌面版单独说明
 └─ js/
    ├─ main.js              应用引导、顶栏、快捷键、拖拽、视图切换
    ├─ store.js             全局状态、筛选、分页、分类树、去重扫描、订阅广播
@@ -353,7 +363,43 @@ prompt-vault/
       └─ prompts.js        LLM 系统提示词模板
 ```
 
-约 11,000 行代码，零依赖。
+网页版约 11,000 行代码，零依赖。
+
+---
+
+## 桌面版
+
+`desktop/` 是 Electron 封装，渲染层与网页版**共用同一套代码**（构建前自动同步，不改一行业务逻辑）。
+
+适合不想装 Python / Node、也不想开命令行的场景：双击 exe 直接用。
+
+### 自己打包
+
+```bash
+cd desktop
+npm install
+npm run build        # NSIS 安装包 + 便携版
+# 或只打便携版
+npm run build:portable
+```
+
+产物在 `desktop/dist/`。
+
+### 开发模式
+
+```bash
+cd desktop
+npm run dev
+```
+
+渲染层直接指向上一级目录，改完网页代码刷新窗口即可，不用重新同步。
+
+### 数据不互通
+
+桌面版的数据存在 Electron 的 `userData`（Windows 上是 `%APPDATA%\PromptVault\`），
+和浏览器版是两套独立存储。迁移要走「导出整库 JSON → 桌面版导入」。
+
+细节见 [`desktop/README.md`](desktop/README.md)。
 
 ---
 
@@ -421,8 +467,11 @@ node --check js/main.js
 
 ### 新增 JS 文件时注意
 
-如果你是 fork 后要接入 Electron 或做打包，注意：**新增的 `.js` 文件必须同步到打包脚本的拷贝白名单**，
-否则打包产物启动时 `import` 失败会**直接白屏且没有任何报错提示**（踩过这个坑）。
+桌面版构建前会把网页版源码同步到 `desktop/renderer/`，靠的是
+[`desktop/scripts/sync-renderer.mjs`](desktop/scripts/sync-renderer.mjs) 里的**文件白名单**。
+
+新增 `.js` 文件时必须把它加进 `copyList`，否则打包产物启动时 `import` 失败会
+**直接白屏且没有任何报错提示**（踩过这个坑）。
 
 ---
 

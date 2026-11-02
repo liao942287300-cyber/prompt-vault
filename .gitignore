@@ -6,14 +6,21 @@ desktop.ini
 .vscode/
 *.swp
 
-# 依赖（本项目零依赖，此规则用于防止误提交）
+# 依赖
 node_modules/
-package-lock.json
+
+# 根目录的 package-lock 不需要（网页版本体零依赖，没有 npm 包）
+/package-lock.json
 
 # 构建产物
 dist/
 build/
 *.log
+
+# 桌面版构建产物（renderer 由 scripts/sync-renderer.mjs 从上级目录生成，不入库）
+desktop/renderer/
+desktop/dist/
+desktop/.verify-data/
 
 # 本地测试与临时文件
 .qa-tmp/

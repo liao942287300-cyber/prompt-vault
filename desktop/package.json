@@ -1,0 +1,65 @@
+{
+  "name": "promptvault-desktop",
+  "version": "1.1.6",
+  "description": "PromptVault 图片提示词管理台 · Windows 桌面客户端",
+  "main": "main.js",
+  "private": true,
+  "author": "PromptVault",
+  "license": "MIT",
+  "scripts": {
+    "sync": "node scripts/sync-renderer.mjs",
+    "icon": "python scripts/make-icon.py || py -3 scripts/make-icon.py",
+    "dev": "npm run sync && electron .",
+    "build": "npm run sync && npm run icon && set ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electron-builder-binaries/&& electron-builder --win --x64 --publish=never",
+    "build:portable": "npm run sync && npm run icon && set ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electron-builder-binaries/&& electron-builder --win portable --x64 --publish=never",
+    "build:nsis": "npm run sync && npm run icon && set ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electron-builder-binaries/&& electron-builder --win nsis --x64 --publish=never"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.promptvault.desktop",
+    "productName": "PromptVault",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json",
+      "build/icon.ico"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PromptVault 提示词库",
+      "artifactName": "${productName}-Setup-${version}.exe",
+      "uninstallDisplayName": "PromptVault 提示词库",
+      "license": "README.md"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
+    },
+    "electronDownload": {
+      "mirror": "https://registry.npmmirror.com/-/binary/electron/"
+    }
+  }
+}
