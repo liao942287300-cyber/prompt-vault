@@ -1,5 +1,9 @@
 # PromptVault · 图片提示词管理台
 
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Release](https://img.shields.io/github/v/release/liao942287300-cyber/prompt-vault?color=green)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+
 一个**完全离线**的本地图片提示词（Prompt）管理工具。纯原生 HTML + CSS + ES Module，
 **零框架、零构建、零 npm 依赖、零 CDN 外链**，所有数据存在浏览器 IndexedDB 里，一个字节都不上传。
 
@@ -84,21 +88,31 @@ PromptVault 解决的就一件事：**把「图」和「提示词」绑在一起
 
 ## 快速开始
 
+### 方式一：直接下载 Windows 版（最省事）
+
+[**下载 PromptVault-1.1.6-portable.exe**](https://github.com/liao942287300-cyber/prompt-vault/releases/latest/download/PromptVault-1.1.6-portable.exe)（95.5 MB）
+
+双击就能跑。**不需要 Python、不需要 Node、不用开命令行、不联网。**
+
+> 免安装单文件版，不写注册表。数据存在 `%APPDATA%\PromptVault\`，删掉这个目录就等于清空。
+
+### 方式二：从源码跑网页版
+
 > ⚠️ 浏览器对 `file://` 下的 ES Module 有 CORS 限制，**必须通过本地 HTTP 服务打开**，不能直接双击 `index.html`。
 
-### Windows
+#### Windows
 
 双击 `start.bat`，脚本自动选 Python 或 Node 起服务，并打开浏览器访问 <http://localhost:8899/>。
 **关闭那个命令行窗口即停止服务。**
 
-### macOS / Linux
+#### macOS / Linux
 
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-### 手动启动（任选其一）
+#### 手动启动（任选其一）
 
 ```bash
 python -m http.server 8899
@@ -108,7 +122,7 @@ npx --yes serve -l 8899 .
 
 然后浏览器访问 <http://localhost:8899/>。
 
-> 不想装 Python / Node，也不想开命令行？用 [桌面版](#桌面版)，双击 exe 就能用。
+> 想要安装包或者自己打包？见 [桌面版](#桌面版)。
 
 ---
 
@@ -380,7 +394,15 @@ prompt-vault/
 
 `desktop/` 是 Electron 封装，渲染层与网页版**共用同一套代码**（构建前自动同步，不改一行业务逻辑）。
 
-适合不想装 Python / Node、也不想开命令行的场景：双击 exe 直接用。
+适合不想装 Python / Node、也不想开命令行的场景。
+
+### 下载
+
+| 文件 | 说明 |
+|---|---|
+| [PromptVault-1.1.6-portable.exe](https://github.com/liao942287300-cyber/prompt-vault/releases/latest/download/PromptVault-1.1.6-portable.exe) | 便携版，95.5 MB，双击运行，不写注册表 |
+
+全部版本见 [Releases](https://github.com/liao942287300-cyber/prompt-vault/releases)。
 
 ### 自己打包
 
