@@ -90,7 +90,7 @@ PromptVault 解决的就一件事：**把「图」和「提示词」绑在一起
 
 ### 方式一：直接下载 Windows 版（最省事）
 
-[**下载 PromptVault-1.1.6-portable.exe**](https://github.com/liao942287300-cyber/prompt-vault/releases/latest/download/PromptVault-1.1.6-portable.exe)（95.5 MB）
+[**下载 Windows 便携版**](https://github.com/liao942287300-cyber/prompt-vault/releases/latest)（约 95 MB）
 
 双击就能跑。**不需要 Python、不需要 Node、不用开命令行、不联网。**
 
@@ -400,7 +400,7 @@ prompt-vault/
 
 | 文件 | 说明 |
 |---|---|
-| [PromptVault-1.1.6-portable.exe](https://github.com/liao942287300-cyber/prompt-vault/releases/latest/download/PromptVault-1.1.6-portable.exe) | 便携版，95.5 MB，双击运行，不写注册表 |
+| [PromptVault 便携版](https://github.com/liao942287300-cyber/prompt-vault/releases/latest) | 免安装单文件，约 95 MB，双击运行，不写注册表 |
 
 全部版本见 [Releases](https://github.com/liao942287300-cyber/prompt-vault/releases)。
 

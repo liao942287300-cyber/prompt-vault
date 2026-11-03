@@ -11,7 +11,7 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| [PromptVault-1.1.6-portable.exe](https://github.com/liao942287300-cyber/prompt-vault/releases/latest/download/PromptVault-1.1.6-portable.exe) | 便携版，95.5 MB，双击运行，不写注册表 |
+| [PromptVault 便携版](https://github.com/liao942287300-cyber/prompt-vault/releases/latest) | 免安装单文件，约 95 MB，双击运行，不写注册表 |
 
 全部版本见 [Releases](https://github.com/liao942287300-cyber/prompt-vault/releases)。
 
