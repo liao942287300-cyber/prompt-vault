@@ -525,8 +525,12 @@ export function mountGallery(ctx) {
     const stamp = new Date().toISOString().slice(0, 10);
 
     if (format === 'txt') {
-      // 每条之间空一行：ComfyUI 的批量提示词按空行分组
-      const text = items.map((img) => String(img.positive).trim()).join('\n\n');
+      // 一条提示词占一行，行与行之间不空行。
+      // 提示词内部残留的换行（Word 导入的多段落会带 \n）压成空格，
+      // 否则一条会被 ComfyUI 当成好几条。
+      const text = items
+        .map((img) => String(img.positive).replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').trim())
+        .join('\n');
       downloadBlob(
         new Blob([text], { type: 'text/plain;charset=utf-8' }),
         `prompts-${items.length}-${stamp}.txt`
