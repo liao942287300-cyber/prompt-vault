@@ -184,18 +184,23 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // 下载时弹原生保存对话框
-  mainWindow.webContents.session.on('will-download', (e, item, webContents) => {
-    const suggested = item.getFilename();
-    dialog.showSaveDialog(mainWindow, {
-      defaultPath: suggested,
-      title: '保存文件'
-    }).then(({ filePath, canceled }) => {
-      if (canceled || !filePath) {
-        item.cancel();
-        return;
-      }
-      item.setSavePath(filePath);
+  // 下载时用系统保存对话框（只弹一次）。
+  //
+  // ⚠️ 这里不能用 dialog.showSaveDialog：它是异步的，在 Promise resolve 之前
+  // item 还没有 savePath，Electron 会先自己弹一个默认保存框 —— 用户会看到
+  // 两个保存窗口。正确做法是 setSaveDialogOptions，让 Electron 用它自己的
+  // 对话框、但采用我们给的默认路径和标题。
+  mainWindow.webContents.session.on('will-download', (e, item) => {
+    let suggested = (item.getFilename() || '').trim();
+    // blob: URL 拿不到文件名时 Chromium 会给个 "download"，用时间戳兜底，
+    // 免得连续导出全叫 download、互相覆盖
+    if (!suggested || suggested === 'download') {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      suggested = `promptvault-${ts}`;
+    }
+    item.setSaveDialogOptions({
+      title: '保存文件',
+      defaultPath: path.join(app.getPath('downloads'), suggested)
     });
   });
 
