@@ -3,7 +3,9 @@
  * ========================================================================= */
 
 import * as store from '../store.js';
-import { el, icon, toast, copyAndToast, composePromptText, confirmDialog } from '../utils.js';
+import {
+  el, icon, toast, copyAndToast, composePromptText, confirmDialog, downloadBlob, toCsv
+} from '../utils.js';
 
 /** 悬停弹出延迟（毫秒） */
 const HOVER_DELAY = 250;
@@ -72,6 +74,25 @@ export function mountGallery(ctx) {
   foot.appendChild(nextBtn);
   foot.appendChild(jumpInput);
   root.appendChild(foot);
+
+  /* ------------------------------ 提示词购物车 ------------------------------ */
+  const cartFab = el('button', { class: 'cart-fab', type: 'button', title: '提示词购物车' });
+  cartFab.innerHTML = `${icon('cart', 22)}<span class="cart-badge" hidden></span>`;
+  root.appendChild(cartFab);
+  const cartBadge = cartFab.querySelector('.cart-badge');
+
+  const cartPanel = el('div', { class: 'cart-panel' });
+  cartPanel.hidden = true;
+  root.appendChild(cartPanel);
+
+  /** 购物车面板里的缩略图 URL（与图库网格分开管理，避免互相提前释放） */
+  let cartUrls = [];
+  function releaseCartUrls() {
+    cartUrls.forEach((url) => URL.revokeObjectURL(url));
+    cartUrls = [];
+  }
+  /** 记住用户填的随机条数，面板重绘后不丢 */
+  let lastRandomCount = 10;
 
   /* ------------------------------ 悬停卡 ------------------------------ */
   const popoverRoot = document.getElementById('popover-root') || document.body;
@@ -221,6 +242,7 @@ export function mountGallery(ctx) {
         : '把图片拖进来，或点击导入';
       foot.hidden = true;
       renderCount();
+      updateCartUI();
       return;
     }
 
@@ -233,6 +255,7 @@ export function mountGallery(ctx) {
     grid.appendChild(frag);
 
     renderCount();
+    updateCartUI();
   }
 
   function renderCount() {
@@ -293,6 +316,8 @@ export function mountGallery(ctx) {
     if (url) {
       const img = el('img', { alt: image.name || '', loading: 'lazy' });
       img.src = url;
+      // 用原始宽高先占位：瀑布流里图片加载前高度为 0 会让整列跳动
+      if (image.width && image.height) img.style.aspectRatio = `${image.width} / ${image.height}`;
       thumbWrap.appendChild(img);
     } else {
       const ph = el('div', { class: 'thumb-placeholder', html: icon('image', 34) });
@@ -339,19 +364,196 @@ export function mountGallery(ctx) {
     card.appendChild(meta);
 
     card.addEventListener('click', () => {
+      // 选购模式下点卡片 = 加入 / 移出购物车，不打开详情
+      if (store.state.cartMode) {
+        store.toggleCartItem(image.id);
+        return;
+      }
       cancelHover();
       ctx.openDetail(image.id, store.state.galleryList.map((i) => i.id));
     });
     card.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        cancelHover();
-        ctx.openDetail(image.id, store.state.galleryList.map((i) => i.id));
+      if (e.key !== 'Enter') return;
+      if (store.state.cartMode) {
+        store.toggleCartItem(image.id);
+        return;
       }
+      cancelHover();
+      ctx.openDetail(image.id, store.state.galleryList.map((i) => i.id));
     });
-    card.addEventListener('mouseenter', () => scheduleHover(card, image));
+    // 选购模式下不弹悬停卡，避免挡住点击
+    card.addEventListener('mouseenter', () => {
+      if (store.state.cartMode) return;
+      scheduleHover(card, image);
+    });
     card.addEventListener('mouseleave', () => scheduleHide());
 
     return card;
+  }
+
+  /* ------------------------------ 购物车逻辑 ------------------------------ */
+
+  function openCart() {
+    cartPanel.hidden = false;
+    store.setCartMode(true);
+    renderCartPanel();
+  }
+
+  function closeCart() {
+    cartPanel.hidden = true;
+    store.setCartMode(false);
+  }
+
+  function buildCartRow(image) {
+    const row = el('div', { class: 'cart-item' });
+    const src = image.thumb || image.blob;
+    if (src) {
+      const url = URL.createObjectURL(src);
+      cartUrls.push(url);
+      row.appendChild(el('img', { class: 'cart-item-thumb', src: url, alt: '' }));
+    } else {
+      row.appendChild(el('div', { class: 'cart-item-thumb' }));
+    }
+    row.appendChild(el('div', {
+      class: 'cart-item-text',
+      text: String(image.positive || '').trim() || '（没有正向提示词）'
+    }));
+    const del = el('button', {
+      class: 'cart-item-del', type: 'button', title: '移出购物车', html: icon('close', 13)
+    });
+    del.addEventListener('click', () => store.toggleCartItem(image.id));
+    row.appendChild(del);
+    return row;
+  }
+
+  function renderCartPanel() {
+    releaseCartUrls();
+    cartPanel.innerHTML = '';
+    const items = store.cartImages();
+
+    /* 头部 */
+    const head = el('div', { class: 'cart-head' });
+    head.appendChild(el('div', { class: 'cart-title', text: '提示词购物车' }));
+    head.appendChild(el('span', { class: 'cart-count', text: `${items.length} 条` }));
+    const closeBtn = el('button', { class: 'icon-btn', type: 'button', title: '收起', html: icon('close', 16) });
+    closeBtn.addEventListener('click', closeCart);
+    head.appendChild(closeBtn);
+    cartPanel.appendChild(head);
+
+    /* 提示 */
+    const hint = el('div', { class: `cart-hint${store.state.cartMode ? ' is-on' : ''}` });
+    hint.textContent = store.state.cartMode
+      ? '选购中：点图库里的图片即可加入或移出购物车'
+      : '点右下角按钮进入选购模式，再点图片加入购物车';
+    cartPanel.appendChild(hint);
+
+    /* 已选列表 */
+    const list = el('div', { class: 'cart-list' });
+    if (!items.length) {
+      list.appendChild(el('div', { class: 'cart-empty', text: '购物车是空的' }));
+    } else {
+      items.forEach((image) => list.appendChild(buildCartRow(image)));
+    }
+    cartPanel.appendChild(list);
+
+    /* 操作区 */
+    const actions = el('div', { class: 'cart-actions' });
+
+    const randRow = el('div', { class: 'cart-row' });
+    const nInput = el('input', {
+      class: 'input', type: 'number', min: '1', value: String(lastRandomCount)
+    });
+    nInput.title = '从当前筛选结果里随机抽几条';
+    nInput.addEventListener('input', () => { lastRandomCount = Math.max(1, Number(nInput.value) || 1); });
+    const randBtn = el('button', { class: 'btn btn-sm', type: 'button' });
+    randBtn.innerHTML = `${icon('dice', 14)}<span>随机抽取</span>`;
+    randBtn.title = '从当前分类（含搜索）里随机抽 N 条带提示词的图，覆盖购物车';
+    randBtn.addEventListener('click', () => {
+      lastRandomCount = Math.max(1, Number(nInput.value) || 1);
+      const { picked, pool } = store.pickRandomCart(lastRandomCount);
+      if (!pool) { toast('当前筛选下没有带提示词的图片', 'warn'); return; }
+      if (picked < lastRandomCount) toast(`当前分类只有 ${pool} 条带提示词，已全部选入`, 'warn');
+      else toast(`已随机抽取 ${picked} 条`, 'success');
+    });
+    randRow.appendChild(nInput);
+    randRow.appendChild(randBtn);
+    actions.appendChild(randRow);
+
+    const expRow = el('div', { class: 'cart-row' });
+    const txtBtn = el('button', { class: 'btn btn-sm', type: 'button' });
+    txtBtn.innerHTML = `${icon('download', 14)}<span>导出 TXT</span>`;
+    txtBtn.title = '每条提示词之间空一行，可直接喂给 ComfyUI 批量生图';
+    txtBtn.addEventListener('click', () => exportCart('txt'));
+    const csvBtn = el('button', { class: 'btn btn-sm', type: 'button' });
+    csvBtn.innerHTML = `${icon('download', 14)}<span>导出 CSV</span>`;
+    csvBtn.title = '序号 / 名称 / 正向提示词，带 BOM 可被 Excel 正确识别';
+    csvBtn.addEventListener('click', () => exportCart('csv'));
+    expRow.appendChild(txtBtn);
+    expRow.appendChild(csvBtn);
+    actions.appendChild(expRow);
+
+    const modeRow = el('div', { class: 'cart-row' });
+    const modeBtn = el('button', {
+      class: `btn btn-sm${store.state.cartMode ? ' btn-primary' : ''}`,
+      type: 'button',
+      text: store.state.cartMode ? '结束选购' : '开始选购'
+    });
+    modeBtn.addEventListener('click', () => {
+      if (store.state.cartMode) closeCart();
+      else store.setCartMode(true);
+    });
+    const clearBtn = el('button', { class: 'btn btn-sm', type: 'button', text: '清空' });
+    clearBtn.addEventListener('click', () => {
+      if (!store.state.cart.length) return;
+      store.clearCart();
+      toast('已清空购物车', 'success');
+    });
+    modeRow.appendChild(modeBtn);
+    modeRow.appendChild(clearBtn);
+    actions.appendChild(modeRow);
+
+    cartPanel.appendChild(actions);
+  }
+
+  /**
+   * 导出购物车里的正向提示词。
+   * @param {'txt'|'csv'} format
+   */
+  function exportCart(format) {
+    const items = store.cartImages().filter((img) => String(img.positive || '').trim());
+    if (!items.length) { toast('购物车是空的，先选几张图', 'warn'); return; }
+    const stamp = new Date().toISOString().slice(0, 10);
+
+    if (format === 'txt') {
+      // 每条之间空一行：ComfyUI 的批量提示词按空行分组
+      const text = items.map((img) => String(img.positive).trim()).join('\n\n');
+      downloadBlob(
+        new Blob([text], { type: 'text/plain;charset=utf-8' }),
+        `prompts-${items.length}-${stamp}.txt`
+      );
+    } else {
+      const rows = [['序号', '名称', '正向提示词']];
+      items.forEach((img, i) => rows.push([String(i + 1), img.name || '', String(img.positive).trim()]));
+      downloadBlob(
+        new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' }),
+        `prompts-${items.length}-${stamp}.csv`
+      );
+    }
+    toast(`已导出 ${items.length} 条提示词`, 'success');
+  }
+
+  /** 购物车变化：只做局部更新，不重绘整个网格（重绘会让 60 张图的 URL 全部重建） */
+  function updateCartUI() {
+    const count = store.state.cart.length;
+    cartBadge.textContent = String(count);
+    cartBadge.hidden = count === 0;
+    cartFab.classList.toggle('is-active', store.state.cartMode);
+    cartFab.title = store.state.cartMode ? '结束选购' : '提示词购物车';
+    grid.classList.toggle('is-picking', store.state.cartMode);
+    grid.querySelectorAll('.card').forEach((card) => {
+      card.classList.toggle('is-picked', store.isInCart(card.dataset.id));
+    });
+    if (!cartPanel.hidden) renderCartPanel();
   }
 
   /* ------------------------------ 交互 ------------------------------ */
@@ -365,6 +567,12 @@ export function mountGallery(ctx) {
   prevBtn.addEventListener('click', () => gotoPage(store.state.galleryPage - 1));
   nextBtn.addEventListener('click', () => gotoPage(store.state.galleryPage + 1));
   jumpInput.addEventListener('change', () => gotoPage(jumpInput.value));
+
+  /* 购物车悬浮按钮：开面板 = 进入选购模式，关面板 = 退出 */
+  cartFab.addEventListener('click', () => {
+    if (cartPanel.hidden) openCart();
+    else closeCart();
+  });
   jumpInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') gotoPage(jumpInput.value);
   });
@@ -411,6 +619,8 @@ export function mountGallery(ctx) {
   /* ------------------------------ 订阅 ------------------------------ */
   const REASONS = new Set(['all', 'images', 'filter', 'search', 'settings']);
   store.subscribe((reason) => {
+    // 购物车变化只更新角标 / 选中态 / 面板，不重绘网格
+    if (reason === 'cart') { updateCartUI(); return; }
     if (!REASONS.has(reason)) return;
     render();
     // 筛选 / 搜索 / 翻页后列表内容整批换掉，停在原滚动位置会看到一片空白

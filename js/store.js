@@ -59,6 +59,11 @@ export const state = {
   /** 图库当前页码（从 1 开始） */
   galleryPage: 1,
 
+  /** 提示词购物车：存图片 id，数组顺序即加入顺序 */
+  cart: [],
+  /** 选购模式：开启后点卡片是「加入购物车」而不是打开详情 */
+  cartMode: false,
+
   /** 派生数据 */
   galleryList: [],
   galleryFiltered: [],
@@ -626,9 +631,13 @@ export async function removeImages(ids = [], opts = {}) {
   const set = new Set(ids);
   state.images = state.images.filter((img) => !set.has(img.id));
   ids.forEach((id) => state.selection.delete(id));
+  // 被删掉的图要同时从购物车里移除，否则角标数量会和实际条数对不上
+  const before = state.cart.length;
+  if (before) state.cart = state.cart.filter((id) => !set.has(id));
   await db.deleteImages(ids);
   recompute();
   if (!opts.silent) emit('images');
+  if (state.cart.length !== before) emit('cart');
 }
 
 /**
@@ -699,6 +708,78 @@ export async function toggleFavorite(id) {
   const image = imageById(id);
   if (!image) return;
   await updateImage(id, { favorite: !image.favorite });
+}
+
+/* ------------------------------------------------------------ 提示词购物车 */
+
+/**
+ * 切换选购模式。开启后点图库卡片是「加入购物车」，不再打开详情。
+ * @param {boolean} on
+ */
+export function setCartMode(on) {
+  const next = Boolean(on);
+  if (state.cartMode === next) return;
+  state.cartMode = next;
+  emit('cart');
+}
+
+/** 某张图是否已在购物车 */
+export function isInCart(id) {
+  return state.cart.includes(id);
+}
+
+/**
+ * 加入 / 移出购物车。
+ * @param {string} id 图片 id
+ * @returns {boolean} 操作后是否在车内（true = 刚加入）
+ */
+export function toggleCartItem(id) {
+  const idx = state.cart.indexOf(id);
+  if (idx >= 0) state.cart.splice(idx, 1);
+  else state.cart.push(id);
+  emit('cart');
+  return idx < 0;
+}
+
+/** 清空购物车 */
+export function clearCart() {
+  if (!state.cart.length) return;
+  state.cart = [];
+  emit('cart');
+}
+
+/** 购物车内的图片对象（按加入顺序；已被删除的记录自动跳过） */
+export function cartImages() {
+  return state.cart.map((id) => imageById(id)).filter(Boolean);
+}
+
+/**
+ * 从当前筛选结果里随机抽 count 条「有正向提示词」的图，覆盖购物车。
+ * 抽的是当前筛选（含搜索），所以换分类再抽就是另一批。
+ *
+ * @param {number} count 想要几条
+ * @returns {{picked:number, pool:number}} 实际抽中条数 / 可选总数
+ */
+export function pickRandomCart(count) {
+  const pool = getFiltered().filter((img) => String(img.positive || '').trim());
+  const total = pool.length;
+  if (!total) {
+    state.cart = [];
+    emit('cart');
+    return { picked: 0, pool: 0 };
+  }
+  const n = Math.max(1, Math.min(Math.round(Number(count) || 1), total));
+  // 部分 Fisher-Yates：只洗前 n 个，避免整池全洗
+  const arr = pool.slice();
+  for (let i = 0; i < n; i += 1) {
+    const j = i + Math.floor(Math.random() * (arr.length - i));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  state.cart = arr.slice(0, n).map((img) => img.id);
+  emit('cart');
+  return { picked: n, pool: total };
 }
 
 /* ------------------------------------------------------------ 分类动作 */
