@@ -4,10 +4,22 @@
 
 import * as store from '../store.js';
 import { el, icon, confirmDialog, promptDialog, listDialog, toast, openModal } from '../utils.js';
-import { ruleKeys } from '../auto-classify.js';
+import { ruleKeys, ruleKeywords, fallbackRuleName } from '../auto-classify.js';
 
 /** 新建分类时可选的颜色 */
 const COLOR_CHOICES = ['#2f6fed', '#0f9d58', '#8b5cf6', '#e8973a', '#0ea5b7', '#d946a0', '#d92d20', '#66717d'];
+
+/**
+ * 快速填充下拉里「清除绑定」这一项的哨兵值。
+ *
+ * 为什么需要它：`ruleKey` 是「关键词留空时用哪条内置规则」，保存时「不填充」要保留原绑定
+ * （否则用户清空关键词就丢了上次绑的规则）。但这样 ruleKey 一旦有值就再也改不回来 ——
+ * 用户误绑了「人物」，UI 里没有任何操作能让他回到「按分类名匹配」。
+ * 所以给一个显式的第三态：选了它 = 明确要求解绑，ruleKey 置 null。
+ *
+ * 必须不会和任何内置规则名撞车（ruleKeys() 里没有这个字符串，已在回归里断言）。
+ */
+const CLEAR_RULE_KEY = '__clear__';
 
 /**
  * 挂载左栏。
@@ -208,7 +220,7 @@ export function mountSidebar(ctx) {
 
     const actions = el('span', { class: 'cat-actions' });
     actions.appendChild(el('button', {
-      class: 'cat-act', type: 'button', title: '识别规则（自动分类用）',
+      class: 'cat-act', type: 'button', title: '识别关键词（自动分类用）',
       dataset: { act: 'rule', id: category.id }, html: icon('tag', 13)
     }));
     actions.appendChild(el('button', {
@@ -235,39 +247,87 @@ export function mountSidebar(ctx) {
   }
 
   /**
-   * 设置二级分类的「识别规则」。
+   * 编辑二级分类的「识别关键词」。
    *
-   * 自动分类的关键词表是按分类名索引的（写死 22 条规则：人物/动物/建筑…）。
-   * 用户把「人物」改成「女人」后，规则就匹配不上了，重新分类永远是 0 张。
-   * 这个弹窗让用户手动指定：这个分类要用哪一套关键词。
+   * 自动分类的关键词原本写死在 auto-classify.js 的 SUB_KEYWORDS 里（22 条规则，按分类名索引）。
+   * 用户把「人物」改成「女人」后，规则表里没有「女人」这条，重新分类永远是 0 张
+   * —— 提示词里写的是 1girl / woman / 少女，跟「女人」两个字字面上完全对不上。
+   *
+   * 这个弹窗把「用哪些词判断这个分类」交给用户：
+   *   - 留空 → 回落到内置规则（按 ruleKey 或分类名）；
+   *   - 填了 → 只用这组词，内置规则和分类名兜底都不再参与（见 auto-classify.js）。
+   *
+   * 关键：填自定义词时**不会**清掉 ruleKey（见下面的保存逻辑）。ruleKey 是「留空时
+   * 用哪条内置规则」，跟自定义词是两个独立的概念；清掉它会让用户填过一次自定义词后
+   * 就永久失去「上次绑定的规则」，清空关键词时只能退回按分类名匹配，常常就匹配不上了。
    */
   async function handleRule(id) {
     const category = store.categoryById(id);
     if (!category || category.level !== 2) return;
 
     const keys = ruleKeys();
-    const current = category.ruleKey || (keys.includes(category.name) ? category.name : '');
+    // 用户已保存的自定义关键词（保留原始大小写，只用于回显）
+    const customWords = (Array.isArray(category.keywords) ? category.keywords : [])
+      .map((word) => String(word == null ? '' : word).trim())
+      .filter(Boolean);
+    // 「关键词清空后会用哪条内置规则」—— 与 keywords 无关，所以填了自定义词时依然有值
+    const fallbackRule = fallbackRuleName(category);
 
     const body = el('div');
     body.appendChild(el('p', {
       class: 'muted',
-      style: { margin: '0 0 10px' },
-      text: `「${category.name}」在「重新自动分类」时，用哪套关键词规则？`
+      style: { margin: '0 0 8px', lineHeight: '1.7' },
+      text: `这些词出现在提示词里，就把图归到「${category.name}」。一行一个，或用逗号隔开。`
     }));
 
-    const select = el('select', { class: 'select' });
-    select.appendChild(el('option', { value: '', text: '不自动识别（保持手动分类）' }));
-    keys.forEach((k) => {
-      select.appendChild(el('option', { value: k, text: k, selected: k === current ? 'selected' : null }));
+    // 预填策略：有自定义词就显示自定义词；否则把内置规则的关键词摊出来，
+    // 让用户看到「默认会命中哪些词」，在默认值上改两个字即可，不用从零写。
+    const textarea = el('textarea', {
+      class: 'textarea',
+      rows: '8',
+      placeholder: '例如：\n女人\n女性\n少女\ngirl\nwoman\n1girl',
+      value: customWords.length ? customWords.join('\n') : ruleKeywords(fallbackRule).join('\n')
     });
-    body.appendChild(select);
+    body.appendChild(textarea);
 
-    body.appendChild(el('p', {
+    /* 快速填充：把某条内置规则的关键词整段覆盖进文本框 */
+    const quickRow = el('div', {
+      style: { display: 'flex', gap: '8px', alignItems: 'center', margin: '10px 0 0' }
+    });
+    quickRow.appendChild(el('span', {
       class: 'muted',
-      style: { margin: '10px 0 0', fontSize: '12px' },
-      text: current
-        ? `当前生效：${current}`
-        : '当前没有绑定规则 —— 这个分类不会被自动归类。'
+      style: { fontSize: '12px', whiteSpace: 'nowrap', flex: '0 0 auto' },
+      text: '快速填充'
+    }));
+    const select = el('select', { class: 'select', style: { width: 'auto', flex: '1 1 auto' } });
+    select.appendChild(el('option', { value: '', text: '不填充（留空则用内置规则）' }));
+    keys.forEach((key) => {
+      select.appendChild(el('option', { value: key, text: key }));
+    });
+    // 第三态：明确解绑。放在最后，和「不填充」区分开 ——
+    // 「不填充」= 这次不动绑定（保留上次绑的），「清除绑定」= 把绑定删掉。
+    select.appendChild(el('option', { value: CLEAR_RULE_KEY, text: '按分类名匹配（清除绑定）' }));
+    // 默认选中「上次绑定的规则」：文本框留空时它就是保存后的 ruleKey
+    select.value = fallbackRule || '';
+    quickRow.appendChild(select);
+
+    const fillBtn = el('button', {
+      class: 'btn', type: 'button', text: '填入', style: { flex: '0 0 auto' }
+    });
+    quickRow.appendChild(fillBtn);
+    body.appendChild(quickRow);
+
+    fillBtn.addEventListener('click', () => {
+      // 「不填充」和「清除绑定」都不要内置规则的词 → 清空文本框
+      const picked = select.value;
+      textarea.value = (picked && picked !== CLEAR_RULE_KEY) ? ruleKeywords(picked).join('\n') : '';
+    });
+
+    body.appendChild(el('div', {
+      class: 'muted',
+      style: { margin: '10px 0 0', fontSize: '12px', lineHeight: '1.8' },
+      html: '· 留空 = 用内置规则（按分类名或上次绑定的规则）<br>· 填了 = 只用你填的词，不再看分类名'
+        + '<br>· 英文按整词匹配：「1girl」里的「girl」不算命中，要把「1girl」本身写进去'
     }));
 
     const footer = el('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } });
@@ -276,12 +336,49 @@ export function mountSidebar(ctx) {
     footer.appendChild(cancelBtn);
     footer.appendChild(okBtn);
 
-    const m = openModal({ title: '识别规则', content: body, footer });
+    const m = openModal({ title: `识别规则 · ${category.name}`, content: body, footer });
     cancelBtn.addEventListener('click', () => m.close());
+
     okBtn.addEventListener('click', async () => {
-      await store.updateCategory(id, { ruleKey: select.value || null });
+      // 分隔符与 auto-classify.js 的 KEYWORD_SEPARATORS 一致：换行 / 半角逗号 / 全角逗号 / 顿号
+      const words = textarea.value
+        .split(/[\n,，、]/)
+        .map((word) => word.trim())
+        .filter(Boolean);
+      // 去重（大小写不敏感）：用户手敲出重复词时不该存两遍
+      const unique = [];
+      const seen = new Set();
+      for (const word of words) {
+        const lower = word.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        unique.push(word);
+      }
+
+      // ruleKey 有三种意图，必须显式区分 —— 不能用 `select.value || category.ruleKey || null`
+      // 这种 `||` 链：那样「清除绑定」会被当成「没选」，ruleKey 永远粘住改不回来。
+      //   1. 选中哨兵 CLEAR_RULE_KEY → 解绑，ruleKey = null（回到按分类名匹配）；
+      //   2. 选中某条具体规则      → 绑定它；
+      //   3. 停在「不填充」        → 保留分类原有的 ruleKey（P3：清空关键词后还能回退）。
+      const picked = select.value;
+      let nextRuleKey;
+      if (picked === CLEAR_RULE_KEY) {
+        nextRuleKey = null;
+      } else if (picked) {
+        nextRuleKey = picked;
+      } else {
+        nextRuleKey = category.ruleKey || null;
+      }
+
+      await store.updateCategory(id, {
+        // 空数组 = 不再有自定义词。必须写 []（而不是 undefined），
+        // 否则用户清空时旧关键词会留在 IndexedDB 里删不掉。
+        keywords: unique,
+        ruleKey: nextRuleKey
+      });
       m.close();
-      toast(select.value ? `已绑定规则「${select.value}」` : '已取消自动识别', 'success');
+      if (picked === CLEAR_RULE_KEY) toast('已清除规则绑定，改按分类名匹配', 'success');
+      else toast(unique.length ? `已保存 ${unique.length} 个关键词` : '已改为使用内置规则', 'success');
     });
   }
 

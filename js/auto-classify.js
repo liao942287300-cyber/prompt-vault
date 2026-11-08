@@ -2,9 +2,13 @@
  * js/auto-classify.js —— 按提示词文本自动推断分类
  *
  * 设计要点：
- * 1. 关键词表按「二级分类名称」组织，运行时再用分类名到 categories 里查 id。
- *    用户改过分类名、加过新分类、删过分类都不会让本模块报错——找不到对应分类的
- *    规则直接跳过，绝不硬编码分类 id。
+ * 1. 关键词从哪来，优先级从高到低（详见 classifyInternal 里的索引构建）：
+ *    a. category.keywords —— 用户在「识别规则」弹窗里自己填的词，填了就「只认」这组；
+ *    b. category.ruleKey  —— 用户显式绑定过的内置规则名（分类改名前的名字）；
+ *    c. category.name     —— 分类名正好等于某个内置规则名。
+ *    三档都对不上时，退化成「拿分类名去文本里找字面命中」的兜底（见 classifyInternal
+ *    第二轮之前的补丁）。用户改过分类名、加过新分类、删过分类都不会让本模块报错
+ *    ——找不到对应分类的规则直接跳过，绝不硬编码分类 id。
  * 2. 纯函数：不依赖 DOM、不读写全局状态，便于单独测试。
  * 3. 打分：某个二级分类命中了多少个「不同」关键词 = 命中数；
  *    得分 = 命中数 × 一级分类权重 + 长词加分（详见 classifyPrompt 的 JSDoc）。
@@ -198,6 +202,36 @@ function normalizeName(name) {
   return String(name == null ? '' : name).trim().toLowerCase().replace(/\s+/g, '');
 }
 
+/** 用户手填关键词时用的分隔符（换行 / 半角逗号 / 全角逗号 / 顿号）——与 UI 保持一致 */
+const KEYWORD_SEPARATORS = /[\n,，、]/;
+
+/**
+ * 规范化一组「用户自定义关键词」。
+ *
+ * 只做 去首尾空白 → 转小写 → 丢空值 → 去重，**不去掉词中间的空格**
+ * （"oil painting"、"raw photo" 这类词的空格是有意义的），也保留用户书写顺序。
+ *
+ * 允许传字符串：JSON 备份恢复时 `keywords` 可能是 "女人,女性" 这样的原始串，
+ * 这里顺手按 UI 的分隔符切开，省得在调用处到处判类型。
+ *
+ * @param {unknown} keywords
+ * @returns {string[]} 已转小写、去重、去空的关键词数组；输入非法时返回空数组
+ */
+function toKeywordList(keywords) {
+  const source = Array.isArray(keywords)
+    ? keywords
+    : (typeof keywords === 'string' ? keywords.split(KEYWORD_SEPARATORS) : []);
+  const out = [];
+  const seen = new Set();
+  for (const raw of source) {
+    const word = String(raw == null ? '' : raw).trim().toLowerCase();
+    if (!word || seen.has(word)) continue;
+    seen.add(word);
+    out.push(word);
+  }
+  return out;
+}
+
 /** 转义正则元字符 */
 function escapeRegExp(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -260,12 +294,29 @@ function priorityOf(parent) {
   return typeof index === 'number' ? index : UNKNOWN_PRIORITY;
 }
 
-/** 规则表（模块加载时规范化一次，后续零开销） */
+/**
+ * 规则表（模块加载时规范化一次，后续零开销）。
+ *
+ * 用途有三：
+ *   1. 对外暴露内置规则清单（AUTO_CLASSIFY_RULES / ruleKeys）；
+ *   2. 给 RULE_NAME_BY_KEY 提供「规范化名 → 原始规则名」的反查表；
+ *   3. 给 classifyInternal 的第一轮遍历提供**声明顺序**（风格 → 主体 → 场景）。
+ *      这个顺序会传导到多分类等分时的排序，不能随意改，见第一轮遍历处的注释。
+ * `key` 字段就是规范化后的规则名。
+ */
 const SUB_RULES = Object.keys(SUB_KEYWORDS).map((name) => ({
   name,
   key: normalizeName(name),
   keywords: SUB_KEYWORDS[name].map((kw) => String(kw).toLowerCase())
 }));
+
+/**
+ * 规范化规则名 → 规则原始名。
+ * 用于「用户输入 / 分类名 / ruleKey 到底对应哪条内置规则」的反查，
+ * 顺带把「3D渲染」和「3D 渲染」这类只差空格的写法归一。
+ * @type {Map<string, string>}
+ */
+const RULE_NAME_BY_KEY = new Map(SUB_RULES.map((rule) => [rule.key, rule.name]));
 
 /**
  * 全部内置规则（只读快照，供调试 / 测试查看覆盖面）。
@@ -294,8 +345,15 @@ export const AUTO_CLASSIFY_RULES = Object.freeze(
  *      → 二级分类的 order（用户可调顺序）→ 名称。
  *   6. hits < 1（阈值）时返回未分类，不瞎猜。
  *
+ * 关键词来源（优先级从高到低，见函数开头的索引构建）：
+ *   1. category.keywords 非空 → 只用这组词，内置规则与分类名兜底都不参与；
+ *   2. category.ruleKey → 用 SUB_KEYWORDS[ruleKey]；
+ *   3. category.name 能对上 SUB_KEYWORDS 的键 → 用那条；
+ *   4. 都没有 → 拿分类名去文本里找字面命中（兜底）。
+ *
  * @param {string} text 提示词正文（正向提示词即可）
- * @param {Array<{id:string, name:string, level:number, parentId:string|null, order?:number}>} categories
+ * @param {Array<{id:string, name:string, level:number, parentId:string|null, order?:number,
+ *        ruleKey?:string|null, keywords?:string[]}>} categories
  *        store.state.categories；允许为空数组 / undefined（此时无法映射到 id，返回 null）
  * @returns {{categoryId:string|null, subCategoryId:string|null, label:string,
  *            score:number, hits:string[]}}
@@ -322,20 +380,69 @@ function classifyInternal(text, categories, multi) {
   const fail = () => (multi ? [] : empty);
   if (!raw.trim()) return fail();
 
-  // 建立索引：id → 分类；规范化名称 → 二级分类
+  // 建立索引：id → 分类；二级分类 → 它的关键词来自哪里。
+  //
+  // 索引里存的是「这个分类的关键词从哪来」，而不是「这个分类叫什么」，因为关键词
+  // 有三个来源，优先级从高到低：
+  //   1. category.keywords —— 用户自己填的（填了就只认这组，内置规则和分类名都让位）
+  //   2. category.ruleKey  —— 用户显式绑定过的内置规则名（分类改名前的名字）
+  //   3. category.name     —— 分类名正好是内置规则名（没改过名的「人物」就走这条）
+  // 三者都对不上的分类不建索引，留给后面的「分类名兜底」轮次处理。
+  // 前两档（内置规则）和第一档（自定义词）分成两个容器，是为了让内置规则那一轮
+  // 能保持 SUB_RULES 的声明顺序，见第一轮遍历处的注释。
   const byId = new Map();
-  const subByKey = new Map();
+  /**
+   * 规范化规则名 → { 二级分类, 关键词 }，只放「内置规则」分类。
+   * 键是规范化名（'3d渲染'），值里的关键词取自 SUB_KEYWORDS[原始规则名]。
+   * @type {Map<string, {category: object, keywords: string[]}>}
+   */
+  const subIndex = new Map();
+  /**
+   * 用自定义关键词的分类，按 categories 数组顺序排队。
+   *
+   * 单独一条队列（而不是混进 subIndex）是为了让内置规则那一轮能继续按
+   * SUB_RULES 的声明顺序遍历 —— 顺序会传导到多分类等分时的排序，见第一轮遍历处的注释。
+   * @type {Array<{category: object, keywords: string[]}>}
+   */
+  const customEntries = [];
+  /** 走自定义关键词的分类 id —— 它们不参与「分类名兜底」（自定义词是唯一依据） */
+  const customIds = new Set();
+  /** 二级分类总数，用于判断「根本没有可分类的分类」 */
+  let subCount = 0;
+
   for (const category of list) {
     if (!category || !category.id) continue;
     byId.set(category.id, category);
     if (category.level !== 2) continue;
+    subCount += 1;
+
+    const custom = toKeywordList(category.keywords);
+    if (custom.length) {
+      // 用户填了关键词 → 只用这组词
+      customEntries.push({ category, keywords: custom });
+      customIds.add(category.id);
+      continue;
+    }
+
     // ruleKey 是分类改名前的名字 —— 关键词表按名字索引，
-    // 用户把「人物」改成「女人」后仍然要能命中「人物」那条规则
+    // 用户把「人物」改成「女人」后仍然要能命中「人物」那条规则。
+    //
+    // 坑：SUB_KEYWORDS 的键是「原始规则名」（'3D 渲染' 带空格），而这里算出的 key 是
+    // 规范化名（'3d渲染'）。直接写 SUB_KEYWORDS[key] 会永远是 undefined —— 22 条规则里
+    // 只有 '3D 渲染' 规范化后会变，而它正好是种子默认分类，等于开箱就废掉这条规则。
+    // 必须用 RULE_NAME_BY_KEY 把规范化名反查回原始规则名。
     const key = normalizeName(category.ruleKey || category.name);
     if (!key) continue;
-    if (!subByKey.has(key)) subByKey.set(key, category);
+    const ruleName = RULE_NAME_BY_KEY.get(key);
+    if (!ruleName) continue;   // 既没有自定义词，也不是内置规则名 → 留给分类名兜底
+    // 多个分类可能映射到同一条规则（同名分类），按原有行为先到先得
+    if (subIndex.has(key)) continue;
+    subIndex.set(key, {
+      category,
+      keywords: SUB_KEYWORDS[ruleName].map((kw) => String(kw).toLowerCase())
+    });
   }
-  if (!subByKey.size) return fail();
+  if (!subCount) return fail();
 
   // 匹配前先剔除排除短语（成语里的「马 / 龙」不是主体，见 PHRASE_EXCLUSIONS）
   let lowerText = raw.toLowerCase();
@@ -343,24 +450,34 @@ function classifyInternal(text, categories, multi) {
     if (lowerText.includes(phrase)) lowerText = lowerText.split(phrase).join('');
   }
 
-  /* --- 第一轮：收集每条规则命中的原始关键词 --- */
+  /* --- 第一轮：收集每个分类命中的原始关键词 --- */
   const candidates = [];
   /** 全文本里所有命中词（跨分类），用于判断单字词是否被更长的整词吸收 */
   const allMatched = new Set();
 
-  for (const rule of SUB_RULES) {
-    const sub = subByKey.get(rule.key);
-    if (!sub) continue; // 用户删掉了这个二级分类，跳过该规则
-
+  /** 收集一个分类命中的原始关键词 */
+  const collectMatches = (entry) => {
     const matched = [];
-    for (const keyword of rule.keywords) {
+    for (const keyword of entry.keywords) {
       if (matchKeyword(lowerText, keyword)) matched.push(keyword);
     }
-    if (!matched.length) continue;
-
+    if (!matched.length) return;
     matched.forEach((keyword) => allMatched.add(keyword));
-    candidates.push({ sub, matched });
+    candidates.push({ sub: entry.category, matched });
+  };
+
+  // 内置规则：按 SUB_RULES 的**声明顺序**（风格 → 主体 → 场景）遍历。
+  //
+  // 这个顺序不是无关紧要的：候选的先后决定 bestByParent 的插入顺序，而多分类结果
+  // 末尾的 sort 是稳定排序 —— 得分相同的分类会按插入顺序排列，第一个会被
+  // reclassifyImages 当成主分类写进 image.categoryId。如果这里改成按 categories
+  // 数组顺序遍历，等分图片的主分类就会换人，重新分类会产生一堆「明明没变却写库」的变更。
+  for (const rule of SUB_RULES) {
+    const entry = subIndex.get(rule.key);
+    if (entry) collectMatches(entry);
   }
+  // 自定义关键词分类：内置规则跑完再跑，顺序 = categories 数组顺序（确定性，可复现）
+  for (const entry of customEntries) collectMatches(entry);
 
   /* --- 补一轮：分类名本身当关键词（兜底） ---
    *
@@ -369,9 +486,14 @@ function classifyInternal(text, categories, multi) {
    *
    * 这里直接拿分类名去提示词里找字面命中：建个「汉服」分类，提示词里出现"汉服"
    * 就能归进去，零配置。规则命中的分类会跳过，所以不会抢掉原本更准的规则。
+   *
+   * 填了自定义关键词的分类**不参与**这一轮：用户已经把「算这个分类的词」写死了，
+   * 再拿分类名兜底就等于偷偷加词（比如分类叫「猫」，词填 ['cat']，文本里的"猫"
+   * 不该把它拉进来）。
    */
   for (const category of list) {
     if (!category || category.level !== 2) continue;
+    if (customIds.has(category.id)) continue;  // 自定义关键词优先，不走分类名兜底
     if (candidates.some((c) => c.sub.id === category.id)) continue;  // 规则已命中，不重复加
     const name = normalizeName(category.name);
     if (!name || name.length < 2) continue;   // 单字分类名（如「图」）太容易误伤
@@ -517,4 +639,37 @@ export function classifyPromptMulti(text, categories) {
  */
 export function ruleKeys() {
   return Object.keys(SUB_KEYWORDS);
+}
+
+/**
+ * 取某条内置规则的关键词（原始大小写，返回副本，调用方可随意改）。
+ *
+ * UI 的「识别规则」弹窗用它把默认关键词摊给用户看：用户不需要从零写词，
+ * 直接在默认值上改两个字就能贴合自己的提示词习惯。
+ *
+ * @param {string} name 内置规则名，如「人物」；大小写 / 空格不敏感
+ * @returns {string[]} 关键词数组；不是内置规则名时返回空数组
+ */
+export function ruleKeywords(name) {
+  const key = normalizeName(name);
+  if (!key) return [];
+  const list = SUB_KEYWORDS[RULE_NAME_BY_KEY.get(key)];
+  return Array.isArray(list) ? list.map((kw) => String(kw)) : [];
+}
+
+/**
+ * 一个二级分类「自定义关键词清空之后」会回退到的内置规则名。
+ *
+ * 判断顺序与 classifyInternal 一致：ruleKey 优先，其次分类名（大小写 / 空格不敏感）。
+ *
+ * 注意这里**刻意不看** category.keywords：用户填了自定义词时，ruleKey 依然被保留着
+ * （见 sidebar 的保存逻辑），就是为了让用户清空关键词后还能回退到这条规则 ——
+ * 「上次绑定的规则」不该因为填过一次自定义词就永久丢失。
+ *
+ * @param {{name?:string, ruleKey?:string|null}|null} category
+ * @returns {string} 内置规则名；没有则空字符串
+ */
+export function fallbackRuleName(category) {
+  if (!category) return '';
+  return RULE_NAME_BY_KEY.get(normalizeName(category.ruleKey || category.name)) || '';
 }
