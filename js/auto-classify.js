@@ -361,6 +361,25 @@ function classifyInternal(text, categories, multi) {
     matched.forEach((keyword) => allMatched.add(keyword));
     candidates.push({ sub, matched });
   }
+
+  /* --- 补一轮：分类名本身当关键词（兜底） ---
+   *
+   * SUB_KEYWORDS 里写死的 22 条规则只覆盖常见分类。用户自己建的「汉服」「机甲」
+   * 或者改名后的「女人」「男人」，规则表里没有，以前永远匹配不到 → 重新分类 0 张。
+   *
+   * 这里直接拿分类名去提示词里找字面命中：建个「汉服」分类，提示词里出现"汉服"
+   * 就能归进去，零配置。规则命中的分类会跳过，所以不会抢掉原本更准的规则。
+   */
+  for (const category of list) {
+    if (!category || category.level !== 2) continue;
+    if (candidates.some((c) => c.sub.id === category.id)) continue;  // 规则已命中，不重复加
+    const name = normalizeName(category.name);
+    if (!name || name.length < 2) continue;   // 单字分类名（如「图」）太容易误伤
+    if (!lowerText.includes(name)) continue;
+    candidates.push({ sub: category, matched: [name] });
+    allMatched.add(name);
+  }
+
   if (!candidates.length) return fail();
 
   /** 所有长度 ≥2 的命中词（可能是「吸收者」） */
