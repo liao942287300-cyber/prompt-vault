@@ -14,6 +14,7 @@ const copyList = [
   'js/utils.js',
   'js/db.js',
   'js/store.js',
+  'js/bridge.js',
   'js/main.js',
   'js/png-meta.js',
   'js/docx-import.js',

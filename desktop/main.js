@@ -3,6 +3,9 @@ const {
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+// 本地数据桥：127.0.0.1 上的只读 HTTP 服务，供 ComfyUI 插件拉取提示词/图片。
+// 它只做转发（HTTP → 渲染进程 window.PV_API），不碰任何业务数据。
+const { startBridgeServer, stopBridgeServer } = require('./bridge-server');
 
 // 允许在无 GPU/无显示的服务器环境里做验证（CI/容器），不要影响正常 Windows 用户
 if (process.argv.includes('--disable-gpu') || process.env.PROMPTVAULT_HEADLESS) {
@@ -167,6 +170,8 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // 窗口没了，数据桥也没有数据源了：立刻关闭并释放端口
+    stopBridgeServer().catch(() => {});
   });
 
   // 阻止页面内导航离开自定义协议
@@ -234,6 +239,17 @@ function createWindow() {
       if (response === 1) mainWindow.reload();
       if (response === 2) app.quit();
     });
+  });
+
+  // 启动本地数据桥（供 ComfyUI 插件读取提示词/图片）。
+  // 失败（例如 8765-8775 全被占用）只会打日志，绝不影响应用启动；
+  // 因此这里不 await，也不把异常往上抛。
+  startBridgeServer({
+    getWindow: () => mainWindow,
+    dataDir: app.getPath('userData'),
+    version: app.getVersion()
+  }).catch((err) => {
+    console.error('[bridge] 本地数据服务启动失败（应用继续运行）', err);
   });
 }
 
@@ -327,6 +343,11 @@ app.on('second-instance', () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// 退出前确保端口释放（close 是异步的，但 closeAllConnections 会立即断开）
+app.on('before-quit', () => {
+  stopBridgeServer().catch(() => {});
 });
 
 app.whenReady().then(() => {
