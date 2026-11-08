@@ -756,18 +756,32 @@ export function mountTransfer(ctx) {
    *  四、导出
    * ================================================================== */
 
-  /** 生成备份对象 */
-  async function buildBackup(images, includeBlobs, onProgress) {
-    const out = {
-      app: 'PromptVault',
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      categories: store.state.categories.map((c) => ({ ...c })),
-      images: []
-    };
+  /**
+   * 导出为 JSON 文件。
+   *
+   * ⚠️ 不能先把所有图攒进一个对象再 JSON.stringify：
+   * 1.7 万张图（约 2 GB 原图 → base64 后约 2.6 GB）时，那一步会生成一个
+   * 2.6 GB 的字符串，超过 V8 单字符串上限（约 512MB ~ 1GB），轻则卡几分钟
+   * 没反应，重则直接抛 Invalid string length / 内存溢出。
+   *
+   * 改成逐条序列化：JS 堆里只留当前这一批（100 条），攒够就包成一个 Blob
+   * （Blob 存的是二进制，不占 JS 堆），最后 new Blob([...chunks]) 只做引用合并。
+   */
+  async function exportJson(images, includeBlobs, filename, onProgress) {
+    if (!images.length) { toast('没有可导出的图片', 'warn'); return; }
     const total = images.length;
-    let done = 0;
-    for (const image of images) {
+
+    const chunks = [];
+    let buf = [];
+
+    // 头部：分类表很小，直接拼
+    buf.push('{"app":"PromptVault","version":1,"exportedAt":"'
+      + new Date().toISOString() + '","categories":'
+      + JSON.stringify(store.state.categories.map((c) => ({ ...c })))
+      + ',"images":[');
+
+    for (let i = 0; i < total; i += 1) {
+      const image = images[i];
       const item = { ...image };
       delete item.blob;
       delete item.thumb;
@@ -775,20 +789,27 @@ export function mountTransfer(ctx) {
         item.blobData = image.blob ? await blobToDataURL(image.blob) : null;
         item.thumbData = image.thumb ? await blobToDataURL(image.thumb) : null;
       }
-      out.images.push(item);
-      done += 1;
-      if (typeof onProgress === 'function') onProgress(done, total);
-    }
-    return out;
-  }
+      buf.push((i ? ',' : '') + JSON.stringify(item));
 
-  /** 导出为 JSON 文件 */
-  async function exportJson(images, includeBlobs, filename, onProgress) {
-    if (!images.length) { toast('没有可导出的图片', 'warn'); return; }
-    const backup = await buildBackup(images, includeBlobs, onProgress);
-    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      // 每 100 条封一个 Blob，释放 JS 堆
+      if (buf.length >= 100) {
+        chunks.push(new Blob(buf));
+        buf = [];
+      }
+
+      if (typeof onProgress === 'function' && (i % 20 === 0 || i === total - 1)) {
+        onProgress(i + 1, total);
+        // 让出主线程，否则一万多次 FileReader 回调会把界面彻底卡住
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    buf.push(']}');
+    chunks.push(new Blob(buf));
+
+    const blob = new Blob(chunks, { type: 'application/json' });
     downloadBlob(blob, filename);
-    toast(`已导出 ${images.length} 张图片的${includeBlobs ? '完整备份' : '元数据'}`, 'success');
+    toast(`已导出 ${total} 张图片的${includeBlobs ? '完整备份' : '元数据'}`, 'success');
   }
 
   /** 导出为 CSV */
