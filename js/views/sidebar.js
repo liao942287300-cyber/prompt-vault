@@ -311,6 +311,14 @@ export function mountSidebar(ctx) {
     select.value = fallbackRule || '';
     quickRow.appendChild(select);
 
+    // 选「清除绑定」时立刻清空文本框。
+    // 不清的话，预填的内置词会被当成自定义关键词存下去 ——
+    // 结果 toast 说"已清除规则绑定"，实际只是把内置规则换成了同样内容的
+    // 自定义词，匹配行为一点没变，用户会以为解绑失败。
+    select.addEventListener('change', () => {
+      if (select.value === CLEAR_RULE_KEY) textarea.value = '';
+    });
+
     const fillBtn = el('button', {
       class: 'btn', type: 'button', text: '填入', style: { flex: '0 0 auto' }
     });
