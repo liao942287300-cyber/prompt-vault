@@ -192,7 +192,11 @@ function bindDragAndDrop() {
       target.classList.add('is-over');
     });
 
-    target.addEventListener('dragleave', () => {
+    target.addEventListener('dragleave', (e) => {
+      // 必须阻止冒泡：不阻止的话这次 dragleave 会冒到 document，
+      // 把 depth 减掉（而进入 target 时 dragenter 被 stopPropagation 拦住了没加），
+      // 结果 depth 变负 → 遮罩在鼠标刚进投放框时就消失了。
+      e.stopPropagation();
       target.classList.remove('is-over');
     });
 
@@ -231,8 +235,10 @@ function bindDragAndDrop() {
 
   document.addEventListener('dragleave', (e) => {
     if (hasModal() || !hasFiles(e)) return;
-    depth -= 1;
-    if (depth <= 0) hide();
+    // 只在真正离开窗口时隐藏。
+    // dragleave 在「从一个元素移到另一个元素」时也会触发（relatedTarget 非空），
+    // 用 depth 计数判断会被子元素的 enter/leave 组合搞乱，直接看 relatedTarget 最稳。
+    if (!e.relatedTarget) hide();
   });
 
   // 关键：全局 drop 只拦截，不导入。落点在框外 = 什么都不发生。

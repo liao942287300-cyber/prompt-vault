@@ -329,7 +329,9 @@ function classifyInternal(text, categories, multi) {
     if (!category || !category.id) continue;
     byId.set(category.id, category);
     if (category.level !== 2) continue;
-    const key = normalizeName(category.name);
+    // ruleKey 是分类改名前的名字 —— 关键词表按名字索引，
+    // 用户把「人物」改成「女人」后仍然要能命中「人物」那条规则
+    const key = normalizeName(category.ruleKey || category.name);
     if (!key) continue;
     if (!subByKey.has(key)) subByKey.set(key, category);
   }
@@ -486,4 +488,14 @@ export function classifyPrompt(text, categories) {
  */
 export function classifyPromptMulti(text, categories) {
   return classifyInternal(text, categories, true);
+}
+
+/**
+ * 关键词表里所有可用的「识别规则」名称。
+ *
+ * 分类改名后（比如「人物」→「女人」）需要重新绑定规则，UI 用这个列表做下拉。
+ * @returns {string[]}
+ */
+export function ruleKeys() {
+  return Object.keys(SUB_KEYWORDS);
 }

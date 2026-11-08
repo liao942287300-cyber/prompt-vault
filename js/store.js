@@ -738,12 +738,25 @@ export async function reclassifyImages(updater, onProgress) {
       }
     }
     if ((i + 1) % BATCH === 0 || i === list.length - 1) {
-      if (typeof onProgress === 'function') onProgress(i + 1, total);
+      if (typeof onProgress === 'function') onProgress(i + 1, total, 'classify');
       await new Promise((r) => setTimeout(r, 0));
     }
   }
 
-  if (targets.length) await db.putImages(targets);
+  // 写库：分批提交。
+  // 一万多条记录（每条都带图片 blob）一次性 put 会让 IndexedDB 缓冲很久，
+  // 进度条明明到 100% 了界面还卡着不动 —— 用户会以为死了。
+  const WRITE_BATCH = 300;
+  if (targets.length) {
+    for (let i = 0; i < targets.length; i += WRITE_BATCH) {
+      await db.putImages(targets.slice(i, i + WRITE_BATCH));
+      if (typeof onProgress === 'function') {
+        onProgress(Math.min(i + WRITE_BATCH, targets.length), targets.length, 'write');
+      }
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
   recompute();
   emit('images');
 
@@ -997,7 +1010,17 @@ export async function bulkAddCategories(categories = []) {
 export async function updateCategory(id, patch) {
   const category = categoryById(id);
   if (!category) return null;
+  const oldName = category.name;
   Object.assign(category, patch);
+
+  // 改名时记住原名字。
+  // 自动分类的关键词表是按「二级分类名」索引的（见 auto-classify.js 的 SUB_KEYWORDS），
+  // 把「人物」改成「女人」后，表里没有「女人」这条规则，重新分类就会一直是 0 张。
+  // 保留 ruleKey 后，规则会继续按「人物」去匹配，用户改多少次名都不丢。
+  if (patch.name && patch.name !== oldName && !category.ruleKey) {
+    category.ruleKey = oldName;
+  }
+
   await db.putCategory(category);
   if (patch.color) {
     // 一级分类换色时同步其子分类

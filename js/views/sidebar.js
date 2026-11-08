@@ -3,7 +3,8 @@
  * ========================================================================= */
 
 import * as store from '../store.js';
-import { el, icon, confirmDialog, promptDialog, listDialog, toast } from '../utils.js';
+import { el, icon, confirmDialog, promptDialog, listDialog, toast, openModal } from '../utils.js';
+import { ruleKeys } from '../auto-classify.js';
 
 /** 新建分类时可选的颜色 */
 const COLOR_CHOICES = ['#2f6fed', '#0f9d58', '#8b5cf6', '#e8973a', '#0ea5b7', '#d946a0', '#d92d20', '#66717d'];
@@ -54,11 +55,12 @@ export function mountSidebar(ctx) {
     }
 
     // 分类操作按钮
-    const action = event.target.closest('[data-act="rename"], [data-act="delete"]');
+    const action = event.target.closest('[data-act="rename"], [data-act="delete"], [data-act="rule"]');
     if (action) {
       event.stopPropagation();
       const id = action.dataset.id;
       if (action.dataset.act === 'rename') await handleRename(id);
+      else if (action.dataset.act === 'rule') await handleRule(id);
       else await handleDelete(id);
       return;
     }
@@ -206,6 +208,10 @@ export function mountSidebar(ctx) {
 
     const actions = el('span', { class: 'cat-actions' });
     actions.appendChild(el('button', {
+      class: 'cat-act', type: 'button', title: '识别规则（自动分类用）',
+      dataset: { act: 'rule', id: category.id }, html: icon('tag', 13)
+    }));
+    actions.appendChild(el('button', {
       class: 'cat-act', type: 'button', title: '重命名',
       dataset: { act: 'rename', id: category.id }, html: icon('pencil', 13)
     }));
@@ -226,6 +232,57 @@ export function mountSidebar(ctx) {
     if (!name || name === category.name) return;
     await store.updateCategory(id, { name });
     toast('分类已重命名', 'success');
+  }
+
+  /**
+   * 设置二级分类的「识别规则」。
+   *
+   * 自动分类的关键词表是按分类名索引的（写死 22 条规则：人物/动物/建筑…）。
+   * 用户把「人物」改成「女人」后，规则就匹配不上了，重新分类永远是 0 张。
+   * 这个弹窗让用户手动指定：这个分类要用哪一套关键词。
+   */
+  async function handleRule(id) {
+    const category = store.categoryById(id);
+    if (!category || category.level !== 2) return;
+
+    const keys = ruleKeys();
+    const current = category.ruleKey || (keys.includes(category.name) ? category.name : '');
+
+    const body = el('div');
+    body.appendChild(el('p', {
+      class: 'muted',
+      style: { margin: '0 0 10px' },
+      text: `「${category.name}」在「重新自动分类」时，用哪套关键词规则？`
+    }));
+
+    const select = el('select', { class: 'select' });
+    select.appendChild(el('option', { value: '', text: '不自动识别（保持手动分类）' }));
+    keys.forEach((k) => {
+      select.appendChild(el('option', { value: k, text: k, selected: k === current ? 'selected' : null }));
+    });
+    body.appendChild(select);
+
+    body.appendChild(el('p', {
+      class: 'muted',
+      style: { margin: '10px 0 0', fontSize: '12px' },
+      text: current
+        ? `当前生效：${current}`
+        : '当前没有绑定规则 —— 这个分类不会被自动归类。'
+    }));
+
+    const footer = el('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } });
+    const cancelBtn = el('button', { class: 'btn', type: 'button', text: '取消' });
+    const okBtn = el('button', { class: 'btn btn-primary', type: 'button', text: '保存' });
+    footer.appendChild(cancelBtn);
+    footer.appendChild(okBtn);
+
+    const m = openModal({ title: '识别规则', content: body, footer });
+    cancelBtn.addEventListener('click', () => m.close());
+    okBtn.addEventListener('click', async () => {
+      await store.updateCategory(id, { ruleKey: select.value || null });
+      m.close();
+      toast(select.value ? `已绑定规则「${select.value}」` : '已取消自动识别', 'success');
+    });
   }
 
   async function handleDelete(id) {
