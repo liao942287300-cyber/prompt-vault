@@ -227,9 +227,16 @@ export function mountManager(ctx) {
       title: image.favorite ? '取消收藏' : '收藏',
       html: icon('heart', 15)
     });
-    favBtn.addEventListener('click', (e) => {
+    favBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      store.toggleFavorite(image.id);
+      // 收藏直接生效；取消收藏要确认，防止手滑点掉
+      if (image.favorite) {
+        const ok = await confirmDialog('取消收藏这张图片？', {
+          title: '取消收藏', danger: true, okText: '取消收藏'
+        });
+        if (!ok) return;
+      }
+      await store.toggleFavorite(image.id);
     });
     tdFav.appendChild(favBtn);
     tr.appendChild(tdFav);

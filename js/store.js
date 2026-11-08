@@ -33,6 +33,8 @@ export const state = {
   assets: [],
   /** 资产图分类（可增删改，持久化在 meta 里；空数组时回落到 ASSET_CATEGORIES 默认值） */
   assetCategories: [],
+  /** 资产图项目（可增删改，和分类是两个独立维度；空 = 未分项目） */
+  assetProjects: [],
   /** v3 新增：LLM 系统提示词模板 */
   systemPrompts: [],
 
@@ -136,6 +138,10 @@ export async function init() {
   state.assetCategories = (Array.isArray(savedAssetCats) && savedAssetCats.length)
     ? savedAssetCats.slice()
     : ASSET_CATEGORIES.slice();
+
+  // 资产图项目：独立维度，默认空（老图都属于「未分项目」）
+  const savedAssetProjects = await db.getMeta('assetProjects', null);
+  state.assetProjects = Array.isArray(savedAssetProjects) ? savedAssetProjects.slice() : [];
 
   const saved = await db.getMeta('settings', null);
   if (saved && typeof saved === 'object') {
@@ -1315,21 +1321,104 @@ export async function deleteAssetCategory(name) {
 }
 
 /** 按分类 + 搜索关键字过滤资产图 */
-export function filteredAssets(category) {
+/** 当前生效的资产图项目列表 */
+export function assetProjectList() {
+  return state.assetProjects.slice();
+}
+
+async function saveAssetProjects(list) {
+  state.assetProjects = list.slice();
+  await db.setMeta('assetProjects', state.assetProjects);
+  emit('assets');
+}
+
+/** 新增资产图项目 */
+export async function addAssetProject(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return { ok: false, error: '名称不能为空' };
+  const list = assetProjectList();
+  if (list.includes(clean)) return { ok: false, error: '这个项目已存在' };
+  list.push(clean);
+  await saveAssetProjects(list);
+  return { ok: true };
+}
+
+/** 重命名资产图项目（该项目下的图同步改名） */
+export async function renameAssetProject(oldName, newName) {
+  const clean = String(newName || '').trim();
+  if (!clean) return { ok: false, error: '名称不能为空' };
+  const list = assetProjectList();
+  const idx = list.indexOf(oldName);
+  if (idx < 0) return { ok: false, error: '项目不存在' };
+  if (clean !== oldName && list.includes(clean)) return { ok: false, error: '这个项目已存在' };
+
+  list[idx] = clean;
+  const affected = state.assets.filter((a) => a.project === oldName);
+  for (const a of affected) a.project = clean;
+  if (affected.length) await db.putAssets(affected);
+
+  await saveAssetProjects(list);
+  return { ok: true, updated: affected.length };
+}
+
+/** 删除资产图项目（图不删，变回「未分项目」） */
+export async function deleteAssetProject(name) {
+  const list = assetProjectList();
+  const idx = list.indexOf(name);
+  if (idx < 0) return { ok: false, error: '项目不存在' };
+
+  list.splice(idx, 1);
+  const affected = state.assets.filter((a) => a.project === name);
+  for (const a of affected) a.project = '';
+  if (affected.length) await db.putAssets(affected);
+
+  await saveAssetProjects(list);
+  return { ok: true, moved: affected.length };
+}
+
+/**
+ * 按分类 + 项目过滤资产图。
+ * @param {string} [category] 分类名，'all' 或空 = 全部
+ * @param {string} [project]  项目名，'all' = 全部，'__none__' = 未分项目
+ */
+export function filteredAssets(category, project) {
   const cat = category || 'all';
+  const proj = project || 'all';
   return state.assets.filter((a) => {
     if (cat !== 'all' && a.category !== cat) return false;
-    return matchKeywords([a.name, a.note, a.category], state.search);
+    if (proj !== 'all') {
+      const p = a.project || '';
+      if (proj === '__none__') {
+        if (p) return false;
+      } else if (p !== proj) {
+        return false;
+      }
+    }
+    return matchKeywords([a.name, a.note, a.category, a.project], state.search);
   });
 }
 
 /** 各分类下的资产图数量 */
 export function assetCounts() {
   const out = { all: state.assets.length };
-  ASSET_CATEGORIES.forEach((c) => { out[c] = 0; });
+  // 用动态列表，用户新建的分类也要有计数（原来用硬编码的 ASSET_CATEGORIES）
+  assetCategoryList().forEach((c) => { out[c] = 0; });
   state.assets.forEach((a) => {
     if (out[a.category] === undefined) out[a.category] = 0;
     out[a.category] += 1;
+  });
+  return out;
+}
+
+/** 各项目下的资产图数量（__none__ = 未分项目） */
+export function assetProjectCounts() {
+  const out = { all: state.assets.length, __none__: 0 };
+  state.assetProjects.forEach((p) => { out[p] = 0; });
+  state.assets.forEach((a) => {
+    const p = a.project || '';
+    if (!p) { out.__none__ += 1; return; }
+    if (out[p] === undefined) out[p] = 0;
+    out[p] += 1;
   });
   return out;
 }
@@ -1341,7 +1430,7 @@ export async function addAssets(records = []) {
   const list = records.map((r) => ({
     id: uid(),
     name: '',
-    category: ASSET_CATEGORIES[0],
+    category: assetCategoryList()[0] || ASSET_CATEGORIES[0],
     note: '',
     blob: null,
     thumb: null,

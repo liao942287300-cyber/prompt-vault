@@ -8,7 +8,7 @@
 
 import * as store from '../store.js';
 import {
-  el, icon, toast, confirmDialog, openModal, formatBytes,
+  el, icon, toast, confirmDialog, openModal, formatBytes, promptDialog,
   genThumbnail, sha256Hex, baseNameNoExt, isImageFile, extFromMime
 } from '../utils.js';
 
@@ -54,6 +54,8 @@ export function mountAssets(ctx) {
 
   /** 当前筛选分类 */
   let activeCat = 'all';
+  /** 当前选中的项目：'all' = 全部，'__none__' = 未分项目，其余为项目名 */
+  let activeProject = 'all';
   /** 当前页码（1 基） */
   let page = 1;
   /** 每页张数 —— 瀑布流一屏大约这么多，再多滚动就累 */
@@ -102,6 +104,10 @@ export function mountAssets(ctx) {
   /* 分类 tab */
   const tabs = el('div', { class: 'asset-tabs' });
   root.appendChild(tabs);
+
+  /* 项目 tab —— 和分类是两个独立维度，单独一行 */
+  const projectBar = el('div', { class: 'asset-projects' });
+  root.appendChild(projectBar);
 
   const statLine = el('div', { class: 'mod-stat', text: '' });
   root.appendChild(statLine);
@@ -198,6 +204,8 @@ export function mountAssets(ctx) {
     if (!images.length) { toast('没有找到可用的图片文件', 'warn'); return; }
 
     const targetCat = activeCat === 'all' ? store.assetCategoryList()[0] : activeCat;
+    // 导入的图归到当前选中的项目；选的是「全部」或「未分项目」就留空
+    const targetProject = (activeProject === 'all' || activeProject === '__none__') ? '' : activeProject;
     const known = store.assetHashSet();
     const records = [];
     let skipped = 0;
@@ -211,6 +219,7 @@ export function mountAssets(ctx) {
         records.push({
           name: baseNameNoExt(file.name) || '未命名',
           category: targetCat,
+          project: targetProject,
           blob: file,
           thumb: thumb || null,
           mime: file.type || 'image/*',
@@ -335,7 +344,43 @@ export function mountAssets(ctx) {
     tabs.appendChild(mkTab('all', '全部', counts.all));
     store.assetCategoryList().forEach((c) => tabs.appendChild(mkTab(c, c, counts[c] || 0)));
 
-    const list = store.filteredAssets(activeCat);
+    /* 项目 tab —— 独立维度，和分类做交集筛选 */
+    projectBar.innerHTML = '';
+    const projCounts = store.assetProjectCounts();
+    const mkProj = (key, label, count) => {
+      const btn = el('button', {
+        class: `asset-tab${activeProject === key ? ' active' : ''}`,
+        type: 'button'
+      });
+      btn.appendChild(el('span', { text: label }));
+      btn.appendChild(el('span', { class: 'asset-tab-count', text: String(count || 0) }));
+      btn.addEventListener('click', () => {
+        activeProject = key;
+        page = 1;
+        render();
+      });
+      return btn;
+    };
+
+    projectBar.appendChild(el('span', { class: 'asset-projects-label', text: '项目' }));
+    projectBar.appendChild(mkProj('all', '全部', projCounts.all));
+    store.assetProjectList().forEach((p) => projectBar.appendChild(mkProj(p, p, projCounts[p] || 0)));
+    if (projCounts.__none__) projectBar.appendChild(mkProj('__none__', '未分项目', projCounts.__none__));
+
+    const addProjBtn = el('button', { class: 'asset-tab asset-tab-add', type: 'button', text: '+ 新建项目' });
+    addProjBtn.addEventListener('click', async () => {
+      const name = await promptDialog('新项目名称', { title: '新建项目', placeholder: '例如：某角色设定集' });
+      if (!name) return;
+      const r = await store.addAssetProject(name);
+      if (!r.ok) { toast(r.error, 'warn'); return; }
+      activeProject = String(name).trim();
+      page = 1;
+      toast('已创建项目', 'success');
+      render();
+    });
+    projectBar.appendChild(addProjBtn);
+
+    const list = store.filteredAssets(activeCat, activeProject);
     const total = store.state.assets.length;
     const totalSize = store.state.assets.reduce((s, a) => s + (Number(a.size) || 0), 0);
     statLine.textContent = total
@@ -463,6 +508,21 @@ export function mountAssets(ctx) {
       }));
     });
 
+    // 项目下拉：未分项目 + 已建项目
+    const projSelect = el('select', { class: 'select' });
+    projSelect.appendChild(el('option', {
+      value: '',
+      text: '未分项目',
+      selected: !item.project ? 'selected' : null
+    }));
+    store.assetProjectList().forEach((p) => {
+      projSelect.appendChild(el('option', {
+        value: p,
+        text: p,
+        selected: p === item.project ? 'selected' : null
+      }));
+    });
+
     const body = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } });
 
     const nameField = el('label', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } });
@@ -474,6 +534,11 @@ export function mountAssets(ctx) {
     catField.appendChild(el('span', { class: 'muted', text: '分类' }));
     catField.appendChild(catSelect);
     body.appendChild(catField);
+
+    const projField = el('label', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } });
+    projField.appendChild(el('span', { class: 'muted', text: '项目' }));
+    projField.appendChild(projSelect);
+    body.appendChild(projField);
 
     const footer = el('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } });
     const cancelBtn = el('button', { class: 'btn', type: 'button', text: '取消' });
@@ -488,7 +553,8 @@ export function mountAssets(ctx) {
     okBtn.addEventListener('click', async () => {
       const name = nameInput.value.trim();
       const category = catSelect.value;
-      await store.updateAsset(item.id, { name, category });
+      const project = projSelect.value || '';
+      await store.updateAsset(item.id, { name, category, project });
       m.close();
       toast('已保存', 'success');
     });
