@@ -300,11 +300,27 @@ export const AUTO_CLASSIFY_RULES = Object.freeze(
  * @returns {{categoryId:string|null, subCategoryId:string|null, label:string,
  *            score:number, hits:string[]}}
  */
-export function classifyPrompt(text, categories) {
+/**
+ * 比较两个候选，返回 <0 表示 a 更优。
+ *
+ * 规则顺序：得分 → 一级分类优先级 → 命中数 → 分类排序（用户可调） → 名称。
+ */
+function compareCandidate(a, b) {
+  if (a.score > b.score + EPS) return -1;
+  if (a.score < b.score - EPS) return 1;
+  if (a.priority !== b.priority) return a.priority < b.priority ? -1 : 1;
+  if (a.hitCount !== b.hitCount) return a.hitCount > b.hitCount ? -1 : 1;
+  if (a.order !== b.order) return a.order < b.order ? -1 : 1;
+  return String(a.sub.name).localeCompare(String(b.sub.name), 'zh-Hans-CN');
+}
+
+function classifyInternal(text, categories, multi) {
   const raw = String(text == null ? '' : text);
   const list = Array.isArray(categories) ? categories : [];
   const empty = { categoryId: null, subCategoryId: null, label: '', score: 0, hits: [] };
-  if (!raw.trim()) return empty;
+  // 多分类模式失败时返回空数组，单分类返回空对象
+  const fail = () => (multi ? [] : empty);
+  if (!raw.trim()) return fail();
 
   // 建立索引：id → 分类；规范化名称 → 二级分类
   const byId = new Map();
@@ -317,7 +333,7 @@ export function classifyPrompt(text, categories) {
     if (!key) continue;
     if (!subByKey.has(key)) subByKey.set(key, category);
   }
-  if (!subByKey.size) return empty;
+  if (!subByKey.size) return fail();
 
   // 匹配前先剔除排除短语（成语里的「马 / 龙」不是主体，见 PHRASE_EXCLUSIONS）
   let lowerText = raw.toLowerCase();
@@ -343,12 +359,14 @@ export function classifyPrompt(text, categories) {
     matched.forEach((keyword) => allMatched.add(keyword));
     candidates.push({ sub, matched });
   }
-  if (!candidates.length) return empty;
+  if (!candidates.length) return fail();
 
   /** 所有长度 ≥2 的命中词（可能是「吸收者」） */
   const longMatched = Array.from(allMatched).filter((keyword) => keyword.length > 1);
 
   let best = null;
+  /** 按一级分类分组的最优候选 —— 多分类模式下每个大类各取一个 */
+  const bestByParent = new Map();
 
   /* --- 第二轮：去重、打分、择优 --- */
   for (const { sub, matched } of candidates) {
@@ -388,6 +406,13 @@ export function classifyPrompt(text, categories) {
       order: Number(sub.order) || 0
     };
 
+    // 多分类：同一个一级分类下只留一个最优二级分类
+    const pid = candidate.parent ? candidate.parent.id : '__none__';
+    const current = bestByParent.get(pid);
+    if (!current || compareCandidate(candidate, current) < 0) {
+      bestByParent.set(pid, candidate);
+    }
+
     if (!best) { best = candidate; continue; }
     if (candidate.score > best.score + EPS) { best = candidate; continue; }
     if (candidate.score < best.score - EPS) continue;
@@ -409,9 +434,28 @@ export function classifyPrompt(text, categories) {
     }
   }
 
-  if (!best) return empty;
+  if (!best) return fail();
 
   const score = Math.round(best.score * 100) / 100;
+
+  // 多分类：每个一级分类各返回一个最优二级分类
+  if (multi) {
+    const out = [];
+    for (const c of bestByParent.values()) {
+      if (c.hits.length < MIN_HITS) continue;
+      out.push({
+        categoryId: c.parent ? c.parent.id : null,
+        subCategoryId: c.sub.id,
+        label: [c.parent ? c.parent.name : '', c.sub.name].filter(Boolean).join(' / '),
+        score: Math.round(c.score * 100) / 100,
+        hits: c.hits
+      });
+    }
+    // 按得分降序：第一个就是最强的那条，写库时作为主分类
+    out.sort((a, b) => b.score - a.score);
+    return out;
+  }
+
   if (best.hits.length < MIN_HITS) {
     return { categoryId: null, subCategoryId: null, label: '', score, hits: best.hits };
   }
@@ -424,4 +468,22 @@ export function classifyPrompt(text, categories) {
     score,
     hits: best.hits
   };
+}
+
+/** 单个最佳分类（兼容旧调用：导入时只取最匹配的那一个） */
+export function classifyPrompt(text, categories) {
+  return classifyInternal(text, categories, false);
+}
+
+/**
+ * 多分类：一张图可以同时属于多个一级大类（风格 + 主体 + 场景…），
+ * 每个大类各取一个最优二级分类 —— 同一大类下不会出现两个。
+ *
+ * 用于「重新自动分类」：把提示词里能识别出的所有属性都挂上，
+ * 而不是只留一个总分最高的。
+ *
+ * @returns {{categoryId:string|null, subCategoryId:string, label:string, score:number, hits:string[]}[]}
+ */
+export function classifyPromptMulti(text, categories) {
+  return classifyInternal(text, categories, true);
 }

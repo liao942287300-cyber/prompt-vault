@@ -216,15 +216,79 @@ export function categoryById(id) {
   return state.categories.find((c) => c.id === id) || null;
 }
 
-/** 图片的分类路径文本，例如 “风格 / 写实摄影” */
+/**
+ * 取一张图的全部分类。
+ *
+ * 一张图可以同时属于多个一级大类（风格 + 主体 + 场景…），
+ * 但**同一个一级分类下只保留一个二级分类**（不能既是人物又是动物）。
+ *
+ * 兼容老数据：没有 `categories` 字段时，用 categoryId/subCategoryId 构造单元素数组。
+ * @returns {{categoryId:string|null, subCategoryId:string|null}[]}
+ */
+export function getImageCategories(image) {
+  if (!image) return [];
+  if (Array.isArray(image.categories) && image.categories.length) {
+    return image.categories
+      .filter((c) => c && (c.categoryId || c.subCategoryId))
+      .map((c) => ({
+        categoryId: c.categoryId || null,
+        subCategoryId: c.subCategoryId || null
+      }));
+  }
+  if (image.categoryId || image.subCategoryId) {
+    return [{
+      categoryId: image.categoryId || null,
+      subCategoryId: image.subCategoryId || null
+    }];
+  }
+  return [];
+}
+
+/** 这张图是否属于某个分类（传 subCategoryId 就只比二级，传 categoryId 比一级） */
+export function imageHasCategory(image, categoryId, subCategoryId) {
+  const list = getImageCategories(image);
+  if (subCategoryId) return list.some((c) => c.subCategoryId === subCategoryId);
+  if (categoryId) return list.some((c) => c.categoryId === categoryId);
+  return false;
+}
+
+/**
+ * 设置一张图的全部分类。
+ *
+ * 会按一级分类去重（同一大类只留最后一个），并同步 categoryId/subCategoryId
+ * 为主分类 —— 老的筛选、排序、显示代码都还在读这两个字段。
+ *
+ * @param {string} id 图片 id
+ * @param {{categoryId?:string|null, subCategoryId?:string|null}[]} list
+ */
+export async function setImageCategories(id, list, opts = {}) {
+  const image = imageById(id);
+  if (!image) return null;
+
+  const next = normalizeCategoryList(list);
+  image.categories = next;
+  image.categoryId = next[0]?.categoryId || null;
+  image.subCategoryId = next[0]?.subCategoryId || null;
+  image.updatedAt = Date.now();
+
+  await db.putImage(image);
+  recompute();
+  if (!opts.silent) emit('images');
+  return image;
+}
+
+/** 图片的分类路径文本，例如 “风格 / 写实摄影”（多分类用逗号连接） */
 export function getCategoryPath(image) {
-  if (!image) return '';
-  const sub = categoryById(image.subCategoryId);
-  const top = categoryById(image.categoryId) || (sub ? categoryById(sub.parentId) : null);
-  const parts = [];
-  if (top) parts.push(top.name);
-  if (sub) parts.push(sub.name);
-  return parts.join(' / ');
+  const list = getImageCategories(image);
+  if (!list.length) return '';
+  return list.map((c) => {
+    const sub = categoryById(c.subCategoryId);
+    const top = categoryById(c.categoryId) || (sub ? categoryById(sub.parentId) : null);
+    const parts = [];
+    if (top) parts.push(top.name);
+    if (sub) parts.push(sub.name);
+    return parts.join(' / ');
+  }).filter(Boolean).join('，');
 }
 
 /** 分类路径（小写），用于排序 */
@@ -300,10 +364,11 @@ function computeGallery() {
     const f = state.filter;
     list = state.images.slice();
     if (f.kind === 'favorite') list = list.filter((img) => img.favorite);
-    else if (f.kind === 'uncategorized') list = list.filter((img) => !img.categoryId && !img.subCategoryId);
+    else if (f.kind === 'uncategorized') list = list.filter((img) => getImageCategories(img).length === 0);
     else if (f.kind === 'category') {
-      if (f.subCategoryId) list = list.filter((img) => img.subCategoryId === f.subCategoryId);
-      else if (f.categoryId) list = list.filter((img) => img.categoryId === f.categoryId);
+      // 多分类：一张图可能挂在多个大类下，只要有一条命中就算
+      if (f.subCategoryId) list = list.filter((img) => imageHasCategory(img, null, f.subCategoryId));
+      else if (f.categoryId) list = list.filter((img) => imageHasCategory(img, f.categoryId, null));
     }
   }
   sortList(list, state.gallerySort.sort, state.gallerySort.dir);
@@ -327,8 +392,8 @@ function computeDbList() {
   if (q) list = list.filter((img) => matchesSearch(img, q));
 
   const f = state.dbFilter;
-  if (f.categoryId) list = list.filter((img) => img.categoryId === f.categoryId);
-  if (f.subCategoryId) list = list.filter((img) => img.subCategoryId === f.subCategoryId);
+  if (f.categoryId) list = list.filter((img) => imageHasCategory(img, f.categoryId, null));
+  if (f.subCategoryId) list = list.filter((img) => imageHasCategory(img, null, f.subCategoryId));
   if (f.favoriteOnly) list = list.filter((img) => img.favorite);
 
   sortList(list, f.sort, f.dir);
@@ -347,9 +412,13 @@ function computeCounts() {
   let uncategorized = 0;
   for (const img of state.images) {
     if (img.favorite) favorite += 1;
-    if (!img.categoryId && !img.subCategoryId) uncategorized += 1;
-    if (img.categoryId) byCategory[img.categoryId] = (byCategory[img.categoryId] || 0) + 1;
-    if (img.subCategoryId) bySub[img.subCategoryId] = (bySub[img.subCategoryId] || 0) + 1;
+    // 多分类：一张图在每个大类下都会给计数 +1
+    const cats = getImageCategories(img);
+    if (!cats.length) uncategorized += 1;
+    for (const c of cats) {
+      if (c.categoryId) byCategory[c.categoryId] = (byCategory[c.categoryId] || 0) + 1;
+      if (c.subCategoryId) bySub[c.subCategoryId] = (bySub[c.subCategoryId] || 0) + 1;
+    }
   }
   state.counts = { total: state.images.length, favorite, uncategorized, byCategory, bySub };
 }
@@ -592,12 +661,36 @@ export async function updateImages(ids, patch) {
 }
 
 /**
+ * 归一化分类列表：按一级分类去重（同一大类只留最后一个），丢掉空项。
+ * @param {{categoryId?:string|null, subCategoryId?:string|null}[]} list
+ */
+export function normalizeCategoryList(list) {
+  const byTop = new Map();
+  for (const item of list || []) {
+    if (!item) continue;
+    const sub = item.subCategoryId ? categoryById(item.subCategoryId) : null;
+    const topId = item.categoryId || (sub ? sub.parentId : null);
+    if (!topId) continue;
+    byTop.set(topId, { categoryId: topId, subCategoryId: item.subCategoryId || null });
+  }
+  return Array.from(byTop.values());
+}
+
+/** 两个分类列表是否等价（按一级分类比，顺序无关） */
+function sameCategoryList(a, b) {
+  if (a.length !== b.length) return false;
+  const key = (c) => `${c.categoryId || ''}|${c.subCategoryId || ''}`;
+  const setA = new Set(a.map(key));
+  return b.every((c) => setA.has(key(c)));
+}
+
+/**
  * 批量重新归类：每张图单独算新分类，最后一次性落库。
  *
  * 为什么不用 updateImages：它只能套同一个 patch，而重新分类每张结果都不同。
  * 为什么不用循环 updateImage：每张都会 recompute + emit，1.7 万张会直接卡死。
  *
- * @param {(image:object)=>{categoryId:string|null, subCategoryId:string|null}|null} updater
+ * @param {(image:object)=>{categories:{categoryId,subCategoryId}[]}|null} updater
  *        返回 null 表示这张跳过（保持原样）
  * @param {(done:number, total:number)=>void} [onProgress] 每批回调一次
  * @returns {Promise<{total:number, changed:number, toUncategorized:number, skipped:number}>}
@@ -624,15 +717,16 @@ export async function reclassifyImages(updater, onProgress) {
     if (!next) {
       skipped += 1;
     } else {
-      const sameCat = (image.categoryId || null) === (next.categoryId || null);
-      const sameSub = (image.subCategoryId || null) === (next.subCategoryId || null);
-      if (!sameCat || !sameSub) {
-        image.categoryId = next.categoryId || null;
-        image.subCategoryId = next.subCategoryId || null;
+      const nextList = normalizeCategoryList(next.categories || []);
+      const curList = getImageCategories(image);
+      if (!sameCategoryList(curList, nextList)) {
+        image.categories = nextList;
+        image.categoryId = nextList[0]?.categoryId || null;
+        image.subCategoryId = nextList[0]?.subCategoryId || null;
         image.updatedAt = now;
         targets.push(image);
         changed += 1;
-        if (!image.categoryId && !image.subCategoryId) toUncategorized += 1;
+        if (!nextList.length) toUncategorized += 1;
       }
     }
     if ((i + 1) % BATCH === 0 || i === list.length - 1) {

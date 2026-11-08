@@ -377,8 +377,10 @@ export function mountLoras(ctx) {
 
     dirBar.innerHTML = '';
     if (dirs.length) {
-      // 当前选的目录被删了（换了映射目录）→ 回到全部
-      if (activeDir && !dirs.includes(activeDir)) activeDir = '';
+      // 当前选的目录被删了（换了映射目录）→ 回到全部。
+      // 注意 '__root__' 是个虚拟 key（根目录），不在 dirs 里，不能把它当「已删除」重置掉，
+      // 否则点「根目录」会立刻被弹回「全部目录」，看起来就是点了没反应。
+      if (activeDir && activeDir !== '__root__' && !dirs.includes(activeDir)) activeDir = '';
 
       const mkDirTab = (key, label, count) => {
         const btn = el('button', {

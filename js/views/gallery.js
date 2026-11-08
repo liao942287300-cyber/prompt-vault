@@ -6,7 +6,7 @@ import * as store from '../store.js';
 import {
   el, icon, toast, copyAndToast, composePromptText, confirmDialog, downloadBlob, toCsv, openModal
 } from '../utils.js';
-import { classifyPrompt } from '../auto-classify.js';
+import { classifyPromptMulti } from '../auto-classify.js';
 
 /** 悬停弹出延迟（毫秒） */
 const HOVER_DELAY = 250;
@@ -618,8 +618,14 @@ export function mountGallery(ctx) {
     try {
       const stats = await store.reclassifyImages(
         (img) => {
-          const guess = classifyPrompt(img.positive || '', cats);
-          return { categoryId: guess.categoryId || null, subCategoryId: guess.subCategoryId || null };
+          // 多分类：提示词里能识别出的每个一级大类各挂一个二级分类
+          const guesses = classifyPromptMulti(img.positive || '', cats);
+          return {
+            categories: guesses.map((g) => ({
+              categoryId: g.categoryId || null,
+              subCategoryId: g.subCategoryId || null
+            }))
+          };
         },
         (done, all) => {
           const pct = Math.round((done / all) * 100);

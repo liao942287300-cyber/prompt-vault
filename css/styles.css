@@ -1359,6 +1359,35 @@ td[data-field].is-select { cursor: pointer; }
 }
 #drop-target.is-over strong { color: var(--accent); }
 
+/* ------------------------- 详情页多分类 ------------------------- */
+.cat-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.cat-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ------------------------- 模块页分页条 ------------------------- */
+.asset-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 0 8px;
+}
+.asset-pager-info {
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.asset-pager[hidden] { display: none; }
+
 /* ------------------------- 重新自动分类 ------------------------- */
 .reclass-warn {
   display: flex;

@@ -119,18 +119,23 @@ export function mountDetail(ctx) {
     if (!form) return;
 
     const nameInput = form.querySelector('[data-field="name"]');
-    const catSelect = form.querySelector('[data-field="categoryId"]');
-    const subSelect = form.querySelector('[data-field="subCategoryId"]');
     const posArea = form.querySelector('[data-field="positive"]');
     const negArea = form.querySelector('[data-field="negative"]');
     const paramArea = form.querySelector('[data-field="params"]');
     const noteArea = form.querySelector('[data-field="note"]');
     const favSwitch = form.querySelector('[data-field="favorite"]');
 
+    // 多分类：收集每一行的大类 + 二级
+    const cats = [];
+    form.querySelectorAll('.cat-row').forEach((row) => {
+      const sels = row.querySelectorAll('select');
+      const topId = sels[0]?.value || '';
+      if (!topId) return;
+      cats.push({ categoryId: topId, subCategoryId: sels[1]?.value || null });
+    });
+
     const patch = {
       name: (nameInput.value || '').trim() || '未命名',
-      categoryId: catSelect.value || null,
-      subCategoryId: subSelect.value || null,
       positive: posArea.value,
       negative: negArea.value,
       params: paramArea.value,
@@ -138,14 +143,10 @@ export function mountDetail(ctx) {
       favorite: Boolean(favSwitch.checked),
       tags: tags.slice()
     };
-    if (patch.subCategoryId) {
-      const sub = store.categoryById(patch.subCategoryId);
-      if (sub) patch.categoryId = sub.parentId;
-    } else if (patch.categoryId) {
-      // 保留一级分类即可
-    }
 
     await store.updateImage(image.id, patch, { silent: true });
+    // 分类单独写：要维护 categories 数组，并同步主分类字段
+    await store.setImageCategories(image.id, cats, { silent: true });
     flashSaved();
   }
 
@@ -207,10 +208,8 @@ export function mountDetail(ctx) {
     nameField.appendChild(nameInput);
     form.appendChild(nameField);
 
-    const row = el('div', { class: 'detail-row' });
-    row.appendChild(buildCategoryField(image, 'categoryId', '一级分类', 1));
-    row.appendChild(buildCategoryField(image, 'subCategoryId', '二级分类', 2));
-    form.appendChild(row);
+    // 多分类：一行一个大类，可增删（同一大类只能选一次）
+    form.appendChild(buildCategoryRows(image));
 
     // 标签
     const tagField = el('div', { class: 'field' });
@@ -294,6 +293,70 @@ export function mountDetail(ctx) {
         if (nameInput.value === (image.name || '')) nameInput.focus({ preventScroll: true });
       }, 20);
     }
+  }
+
+  /**
+   * 多分类编辑：每行一个「大类 + 二级」，可增删。
+   *
+   * 一张图可以同时属于风格 / 主体 / 场景多个大类，所以不能再是一级+二级两个固定下拉。
+   * 写库时由 setImageCategories 按大类去重，同一大类只保留最后一行。
+   */
+  function buildCategoryRows(image) {
+    const wrap = el('div', { class: 'field' });
+    wrap.appendChild(el('label', { class: 'field-label', text: '分类（可添加多个大类）' }));
+
+    const rowsWrap = el('div', { class: 'cat-rows' });
+    const addBtn = el('button', { class: 'btn btn-sm', type: 'button', text: '+ 添加分类' });
+
+    const addRow = (init = {}) => {
+      const row = el('div', { class: 'cat-row' });
+      const topSel = el('select', { class: 'select' });
+      const subSel = el('select', { class: 'select' });
+
+      topSel.appendChild(el('option', { value: '', text: '选择大类' }));
+      store.topCategories().forEach((c) => topSel.appendChild(el('option', { value: c.id, text: c.name })));
+      topSel.value = init.categoryId || '';
+
+      const fillSubs = (parentId, selected) => {
+        subSel.innerHTML = '';
+        subSel.appendChild(el('option', { value: '', text: '未指定' }));
+        store.subCategoriesOf(parentId).forEach((c) => subSel.appendChild(el('option', { value: c.id, text: c.name })));
+        subSel.value = selected || '';
+      };
+      fillSubs(topSel.value, init.subCategoryId);
+
+      topSel.addEventListener('change', () => {
+        fillSubs(topSel.value, '');
+        debouncedSave();
+      });
+      subSel.addEventListener('change', () => debouncedSave());
+
+      const delBtn = el('button', { class: 'cat-act danger', type: 'button', title: '删除这条分类', html: icon('trash', 13) });
+      delBtn.addEventListener('click', () => {
+        row.remove();
+        // 至少留一行，否则没法再加回来
+        if (!rowsWrap.children.length) addRow();
+        debouncedSave();
+      });
+
+      row.appendChild(topSel);
+      row.appendChild(subSel);
+      row.appendChild(delBtn);
+      rowsWrap.appendChild(row);
+    };
+
+    const existing = store.getImageCategories(image);
+    if (existing.length) existing.forEach((c) => addRow(c));
+    else addRow();
+
+    addBtn.addEventListener('click', () => {
+      addRow();
+      debouncedSave();
+    });
+
+    wrap.appendChild(rowsWrap);
+    wrap.appendChild(addBtn);
+    return wrap;
   }
 
   function buildCategoryField(image, field, label, level) {
