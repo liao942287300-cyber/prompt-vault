@@ -31,6 +31,8 @@ export const state = {
   loras: [],
   edits: [],
   assets: [],
+  /** 资产图分类（可增删改，持久化在 meta 里；空数组时回落到 ASSET_CATEGORIES 默认值） */
+  assetCategories: [],
   /** v3 新增：LLM 系统提示词模板 */
   systemPrompts: [],
 
@@ -128,6 +130,12 @@ export async function init() {
   state.assets = await db.getAllAssets();
   state.systemPrompts = await db.getAllPrompts();
   state.loraDirName = await db.getMeta('loraDirName', '');
+
+  // 资产图分类：用户可增删改，没存过就用默认值
+  const savedAssetCats = await db.getMeta('assetCategories', null);
+  state.assetCategories = (Array.isArray(savedAssetCats) && savedAssetCats.length)
+    ? savedAssetCats.slice()
+    : ASSET_CATEGORIES.slice();
 
   const saved = await db.getMeta('settings', null);
   if (saved && typeof saved === 'object') {
@@ -1221,10 +1229,67 @@ export async function removeEdits(ids = []) {
  *  v2 模块三：资产图（原图存储，不压缩）
  * ================================================================== */
 
-/** 资产图固定分类 */
+/** 资产图固定分类（默认值，用户可增删改后存在 meta 里） */
 export const ASSET_CATEGORIES = [
   '角色四视图', '场景资产图', '人物设计图', '道具设计图', '分镜图'
 ];
+
+/** 当前生效的资产图分类列表 */
+export function assetCategoryList() {
+  return state.assetCategories.length ? state.assetCategories.slice() : ASSET_CATEGORIES.slice();
+}
+
+async function saveAssetCategories(list) {
+  state.assetCategories = list.slice();
+  await db.setMeta('assetCategories', state.assetCategories);
+  emit('assets');
+}
+
+/** 新增资产图分类 */
+export async function addAssetCategory(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return { ok: false, error: '名称不能为空' };
+  const list = assetCategoryList();
+  if (list.includes(clean)) return { ok: false, error: '这个分类已存在' };
+  list.push(clean);
+  await saveAssetCategories(list);
+  return { ok: true };
+}
+
+/** 重命名资产图分类（该分类下的图同步改名） */
+export async function renameAssetCategory(oldName, newName) {
+  const clean = String(newName || '').trim();
+  if (!clean) return { ok: false, error: '名称不能为空' };
+  const list = assetCategoryList();
+  const idx = list.indexOf(oldName);
+  if (idx < 0) return { ok: false, error: '分类不存在' };
+  if (clean !== oldName && list.includes(clean)) return { ok: false, error: '这个分类已存在' };
+
+  list[idx] = clean;
+  const affected = state.assets.filter((a) => a.category === oldName);
+  for (const a of affected) a.category = clean;
+  if (affected.length) await db.putAssets(affected);
+
+  await saveAssetCategories(list);
+  return { ok: true, updated: affected.length };
+}
+
+/** 删除资产图分类（图不删，移到第一个分类） */
+export async function deleteAssetCategory(name) {
+  const list = assetCategoryList();
+  if (list.length <= 1) return { ok: false, error: '至少保留一个分类' };
+  const idx = list.indexOf(name);
+  if (idx < 0) return { ok: false, error: '分类不存在' };
+
+  list.splice(idx, 1);
+  const fallback = list[0];
+  const affected = state.assets.filter((a) => a.category === name);
+  for (const a of affected) a.category = fallback;
+  if (affected.length) await db.putAssets(affected);
+
+  await saveAssetCategories(list);
+  return { ok: true, moved: affected.length, fallback };
+}
 
 /** 按分类 + 搜索关键字过滤资产图 */
 export function filteredAssets(category) {

@@ -127,7 +127,7 @@ export function mountDetail(ctx) {
 
     // 多分类：收集每一行的大类 + 二级
     const cats = [];
-    form.querySelectorAll('.cat-row').forEach((row) => {
+    form.querySelectorAll('.detail-cat-row').forEach((row) => {
       const sels = row.querySelectorAll('select');
       const topId = sels[0]?.value || '';
       if (!topId) return;
@@ -305,11 +305,11 @@ export function mountDetail(ctx) {
     const wrap = el('div', { class: 'field' });
     wrap.appendChild(el('label', { class: 'field-label', text: '分类（可添加多个大类）' }));
 
-    const rowsWrap = el('div', { class: 'cat-rows' });
+    const rowsWrap = el('div', { class: 'detail-cat-rows' });
     const addBtn = el('button', { class: 'btn btn-sm', type: 'button', text: '+ 添加分类' });
 
     const addRow = (init = {}) => {
-      const row = el('div', { class: 'cat-row' });
+      const row = el('div', { class: 'detail-cat-row' });
       const topSel = el('select', { class: 'select' });
       const subSel = el('select', { class: 'select' });
 

@@ -84,6 +84,13 @@ export function mountAssets(ctx) {
   const addBtn = el('button', { class: 'btn btn-primary', type: 'button' });
   addBtn.innerHTML = `${icon('upload', 15)}<span>添加资产图</span>`;
   headActions.appendChild(addBtn);
+
+  // 分类管理：资产图的分类原来写死在代码里，现在可以增删改（存 meta）
+  const catMgrBtn = el('button', { class: 'btn btn-sm', type: 'button' });
+  catMgrBtn.innerHTML = `${icon('tag', 15)}<span>管理分类</span>`;
+  catMgrBtn.title = '新增 / 重命名 / 删除资产图分类';
+  catMgrBtn.addEventListener('click', openCategoryManager);
+  headActions.appendChild(catMgrBtn);
   head.appendChild(headActions);
   root.appendChild(head);
 
@@ -190,7 +197,7 @@ export function mountAssets(ctx) {
     const images = (files || []).filter(isImageFile);
     if (!images.length) { toast('没有找到可用的图片文件', 'warn'); return; }
 
-    const targetCat = activeCat === 'all' ? store.ASSET_CATEGORIES[0] : activeCat;
+    const targetCat = activeCat === 'all' ? store.assetCategoryList()[0] : activeCat;
     const known = store.assetHashSet();
     const records = [];
     let skipped = 0;
@@ -326,7 +333,7 @@ export function mountAssets(ctx) {
       return btn;
     };
     tabs.appendChild(mkTab('all', '全部', counts.all));
-    store.ASSET_CATEGORIES.forEach((c) => tabs.appendChild(mkTab(c, c, counts[c] || 0)));
+    store.assetCategoryList().forEach((c) => tabs.appendChild(mkTab(c, c, counts[c] || 0)));
 
     const list = store.filteredAssets(activeCat);
     const total = store.state.assets.length;
@@ -364,6 +371,81 @@ export function mountAssets(ctx) {
     emptyWrap.appendChild(emptyState(title, desc));
   }
 
+  /** 资产图分类管理：新增 / 重命名 / 删除（分类原来写死在代码里） */
+  function openCategoryManager() {
+    const body = el('div');
+    const listWrap = el('div', { class: 'asset-cat-mgr' });
+
+    const renderList = () => {
+      listWrap.innerHTML = '';
+      const list = store.assetCategoryList();
+      const counts = store.assetCounts();
+
+      list.forEach((name) => {
+        const row = el('div', { class: 'asset-cat-mgr-row' });
+        row.appendChild(el('span', { class: 'asset-cat-mgr-name', text: name }));
+        row.appendChild(el('span', { class: 'muted', text: `${counts[name] || 0} 张` }));
+
+        const renameBtn = el('button', { class: 'cat-act', type: 'button', title: '重命名', html: icon('pencil', 13) });
+        renameBtn.addEventListener('click', async () => {
+          const next = prompt(`重命名分类「${name}」`, name);
+          if (next === null) return;
+          const r = await store.renameAssetCategory(name, next);
+          if (!r.ok) { toast(r.error, 'warn'); return; }
+          toast(`已重命名，${r.updated} 张图同步更新`, 'success');
+          renderList();
+        });
+
+        const delBtn = el('button', { class: 'cat-act danger', type: 'button', title: '删除', html: icon('trash', 13) });
+        delBtn.addEventListener('click', async () => {
+          if (list.length <= 1) { toast('至少保留一个分类', 'warn'); return; }
+          const fallback = list.find((c) => c !== name);
+          const ok = await confirmDialog(
+            `删除分类「${name}」？\n\n该分类下的图会移到「${fallback}」，图不会丢。`,
+            { title: '删除分类', danger: true, okText: '删除' }
+          );
+          if (!ok) return;
+          const r = await store.deleteAssetCategory(name);
+          if (!r.ok) { toast(r.error, 'warn'); return; }
+          toast(`已删除，${r.moved} 张图移到「${r.fallback}」`, 'success');
+          if (activeCat === name) activeCat = 'all';
+          renderList();
+        });
+
+        row.appendChild(renameBtn);
+        row.appendChild(delBtn);
+        listWrap.appendChild(row);
+      });
+    };
+
+    renderList();
+
+    const addRow = el('div', { class: 'asset-cat-add' });
+    const input = el('input', { class: 'input', type: 'text', placeholder: '新分类名称' });
+    const addBtn2 = el('button', { class: 'btn btn-primary', type: 'button', text: '添加' });
+    const doAdd = async () => {
+      const r = await store.addAssetCategory(input.value);
+      if (!r.ok) { toast(r.error, 'warn'); return; }
+      input.value = '';
+      toast('已添加', 'success');
+      renderList();
+    };
+    addBtn2.addEventListener('click', doAdd);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAdd(); });
+    addRow.appendChild(input);
+    addRow.appendChild(addBtn2);
+
+    body.appendChild(listWrap);
+    body.appendChild(addRow);
+
+    const footer = el('div', { style: { display: 'flex', justifyContent: 'flex-end' } });
+    const closeBtn = el('button', { class: 'btn', type: 'button', text: '完成' });
+    footer.appendChild(closeBtn);
+
+    const m = openModal({ title: '管理资产图分类', content: body, footer });
+    closeBtn.addEventListener('click', () => m.close());
+  }
+
   /** 重命名 / 改分类（资产图原来只能看和删，不能改） */
   function editAsset(item) {
     const nameInput = el('input', {
@@ -373,7 +455,7 @@ export function mountAssets(ctx) {
     });
 
     const catSelect = el('select', { class: 'select' });
-    store.ASSET_CATEGORIES.forEach((c) => {
+    store.assetCategoryList().forEach((c) => {
       catSelect.appendChild(el('option', {
         value: c,
         text: c,

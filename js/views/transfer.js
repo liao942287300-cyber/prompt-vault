@@ -2120,7 +2120,7 @@ export function mountTransfer(ctx) {
     const images = files.filter(isImageFile);
     if (!images.length) { toast('没有识别到图片文件', 'warn'); return; }
 
-    const targetCat = store.ASSET_CATEGORIES[0];
+    const targetCat = store.assetCategoryList()[0];
     const known = store.assetHashSet();
     const records = [];
     let skipped = 0;
