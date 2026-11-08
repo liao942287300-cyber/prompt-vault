@@ -1361,7 +1361,13 @@ export async function renameAssetProject(oldName, newName) {
   return { ok: true, updated: affected.length };
 }
 
-/** 删除资产图项目（图不删，变回「未分项目」） */
+/**
+ * 删除资产图项目 —— **连同该项目下的图一起删掉**。
+ *
+ * 之前是"图移到未分项目"，但那样用户删了项目图还在，容易堆一堆
+ * 不知道属于谁的图。现在明确：删项目 = 删这个项目里的所有资产图。
+ * 调用方必须先把数量告诉用户并二次确认。
+ */
 export async function deleteAssetProject(name) {
   const list = assetProjectList();
   const idx = list.indexOf(name);
@@ -1369,11 +1375,14 @@ export async function deleteAssetProject(name) {
 
   list.splice(idx, 1);
   const affected = state.assets.filter((a) => a.project === name);
-  for (const a of affected) a.project = '';
-  if (affected.length) await db.putAssets(affected);
+  if (affected.length) {
+    await db.deleteAssets(affected.map((a) => a.id));
+    const ids = new Set(affected.map((a) => a.id));
+    state.assets = state.assets.filter((a) => !ids.has(a.id));
+  }
 
   await saveAssetProjects(list);
-  return { ok: true, moved: affected.length };
+  return { ok: true, removed: affected.length };
 }
 
 /**

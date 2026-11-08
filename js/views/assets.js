@@ -101,13 +101,13 @@ export function mountAssets(ctx) {
   });
   root.appendChild(fileInput);
 
+  /* 项目 tab —— 放在分类上面（先选项目，再看分类） */
+  const projectBar = el('div', { class: 'asset-projects' });
+  root.appendChild(projectBar);
+
   /* 分类 tab */
   const tabs = el('div', { class: 'asset-tabs' });
   root.appendChild(tabs);
-
-  /* 项目 tab —— 和分类是两个独立维度，单独一行 */
-  const projectBar = el('div', { class: 'asset-projects' });
-  root.appendChild(projectBar);
 
   const statLine = el('div', { class: 'mod-stat', text: '' });
   root.appendChild(statLine);
@@ -380,6 +380,11 @@ export function mountAssets(ctx) {
     });
     projectBar.appendChild(addProjBtn);
 
+    // 管理项目：重命名 / 删除（新建已经有上面的快捷按钮）
+    const mgrProjBtn = el('button', { class: 'asset-tab asset-tab-add', type: 'button', text: '管理项目' });
+    mgrProjBtn.addEventListener('click', openProjectManager);
+    projectBar.appendChild(mgrProjBtn);
+
     const list = store.filteredAssets(activeCat, activeProject);
     const total = store.state.assets.length;
     const totalSize = store.state.assets.reduce((s, a) => s + (Number(a.size) || 0), 0);
@@ -414,6 +419,70 @@ export function mountAssets(ctx) {
     emptyWrap.hidden = false;
     emptyWrap.innerHTML = '';
     emptyWrap.appendChild(emptyState(title, desc));
+  }
+
+  /** 项目重命名 / 删除 */
+  function openProjectManager() {
+    const body = el('div');
+    const listWrap = el('div', { class: 'asset-cat-mgr' });
+
+    const renderList = () => {
+      listWrap.innerHTML = '';
+      const list = store.assetProjectList();
+      const counts = store.assetProjectCounts();
+
+      if (!list.length) {
+        listWrap.appendChild(el('div', { class: 'muted', style: { padding: '8px 0' }, text: '还没有项目' }));
+      }
+
+      list.forEach((name) => {
+        const row = el('div', { class: 'asset-cat-mgr-row' });
+        row.appendChild(el('span', { class: 'asset-cat-mgr-name', text: name }));
+        row.appendChild(el('span', { class: 'muted', text: `${counts[name] || 0} 张` }));
+
+        const renameBtn = el('button', { class: 'cat-act', type: 'button', title: '重命名', html: icon('pencil', 13) });
+        renameBtn.addEventListener('click', async () => {
+          const next = prompt(`重命名项目「${name}」`, name);
+          if (next === null) return;
+          const r = await store.renameAssetProject(name, next);
+          if (!r.ok) { toast(r.error, 'warn'); return; }
+          toast(`已重命名，${r.updated} 张图同步更新`, 'success');
+          if (activeProject === name) activeProject = String(next).trim();
+          renderList();
+          render();
+        });
+
+        const delBtn = el('button', { class: 'cat-act danger', type: 'button', title: '删除', html: icon('trash', 13) });
+        delBtn.addEventListener('click', async () => {
+          const count = counts[name] || 0;
+          const ok = await confirmDialog(
+            `删除项目「${name}」？\n\n该项目下的 ${count} 张资产图会一起删除，不可恢复。`,
+            { title: '删除项目', danger: true, okText: count ? `删除项目和 ${count} 张图` : '删除项目' }
+          );
+          if (!ok) return;
+          const r = await store.deleteAssetProject(name);
+          if (!r.ok) { toast(r.error, 'warn'); return; }
+          toast(`已删除项目，同时删掉 ${r.removed} 张图`, 'success');
+          if (activeProject === name) activeProject = 'all';
+          renderList();
+          render();
+        });
+
+        row.appendChild(renameBtn);
+        row.appendChild(delBtn);
+        listWrap.appendChild(row);
+      });
+    };
+
+    renderList();
+
+    const footer = el('div', { style: { display: 'flex', justifyContent: 'flex-end' } });
+    const closeBtn = el('button', { class: 'btn', type: 'button', text: '完成' });
+    footer.appendChild(closeBtn);
+
+    const m = openModal({ title: '管理项目', content: body, footer });
+    body.appendChild(listWrap);
+    closeBtn.addEventListener('click', () => m.close());
   }
 
   /** 资产图分类管理：新增 / 重命名 / 删除（分类原来写死在代码里） */
