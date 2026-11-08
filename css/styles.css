@@ -1359,6 +1359,38 @@ td[data-field].is-select { cursor: pointer; }
 }
 #drop-target.is-over strong { color: var(--accent); }
 
+/* ------------------------- 重新自动分类 ------------------------- */
+.reclass-warn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+}
+.reclass-warn strong { color: var(--danger); font-size: 14px; }
+.reclass-warn ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.reclass-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+.reclass-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width .1s linear;
+}
+
 /* ------------------------- Word 文档导入预览 ------------------------- */
 .docx-bar {
   display: flex;

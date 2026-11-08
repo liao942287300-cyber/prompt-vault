@@ -591,6 +591,63 @@ export async function updateImages(ids, patch) {
   emit('images');
 }
 
+/**
+ * 批量重新归类：每张图单独算新分类，最后一次性落库。
+ *
+ * 为什么不用 updateImages：它只能套同一个 patch，而重新分类每张结果都不同。
+ * 为什么不用循环 updateImage：每张都会 recompute + emit，1.7 万张会直接卡死。
+ *
+ * @param {(image:object)=>{categoryId:string|null, subCategoryId:string|null}|null} updater
+ *        返回 null 表示这张跳过（保持原样）
+ * @param {(done:number, total:number)=>void} [onProgress] 每批回调一次
+ * @returns {Promise<{total:number, changed:number, toUncategorized:number, skipped:number}>}
+ */
+export async function reclassifyImages(updater, onProgress) {
+  const list = state.images.slice();
+  const total = list.length;
+  const targets = [];
+  const now = Date.now();
+  let changed = 0;
+  let toUncategorized = 0;
+  let skipped = 0;
+
+  // 分批处理，中间让出主线程，否则一万多张会卡住界面
+  const BATCH = 400;
+  for (let i = 0; i < list.length; i += 1) {
+    const image = list[i];
+    let next = null;
+    try {
+      next = updater(image);
+    } catch (err) {
+      next = null;
+    }
+    if (!next) {
+      skipped += 1;
+    } else {
+      const sameCat = (image.categoryId || null) === (next.categoryId || null);
+      const sameSub = (image.subCategoryId || null) === (next.subCategoryId || null);
+      if (!sameCat || !sameSub) {
+        image.categoryId = next.categoryId || null;
+        image.subCategoryId = next.subCategoryId || null;
+        image.updatedAt = now;
+        targets.push(image);
+        changed += 1;
+        if (!image.categoryId && !image.subCategoryId) toUncategorized += 1;
+      }
+    }
+    if ((i + 1) % BATCH === 0 || i === list.length - 1) {
+      if (typeof onProgress === 'function') onProgress(i + 1, total);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  if (targets.length) await db.putImages(targets);
+  recompute();
+  emit('images');
+
+  return { total, changed, toUncategorized, skipped };
+}
+
 /** 批量新增图片记录 */
 export async function bulkAddImages(records = []) {
   if (!records.length) return;

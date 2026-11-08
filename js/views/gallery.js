@@ -4,8 +4,9 @@
 
 import * as store from '../store.js';
 import {
-  el, icon, toast, copyAndToast, composePromptText, confirmDialog, downloadBlob, toCsv
+  el, icon, toast, copyAndToast, composePromptText, confirmDialog, downloadBlob, toCsv, openModal
 } from '../utils.js';
+import { classifyPrompt } from '../auto-classify.js';
 
 /** 悬停弹出延迟（毫秒） */
 const HOVER_DELAY = 250;
@@ -40,6 +41,12 @@ export function mountGallery(ctx) {
   exportBtn.innerHTML = `${icon('download', 15)}<span>导出筛选结果</span>`;
   exportBtn.title = '把当前筛选结果导出为 JSON（含图片数据）';
   actions.appendChild(exportBtn);
+
+  const reclassBtn = el('button', { class: 'btn btn-sm', type: 'button' });
+  reclassBtn.innerHTML = `${icon('tag', 15)}<span>重新自动分类</span>`;
+  reclassBtn.title = '按当前分类表，用提示词关键词重新判定每张图的分类（会覆盖现有分类）';
+  actions.appendChild(reclassBtn);
+
   head.appendChild(actions);
   root.appendChild(head);
 
@@ -584,6 +591,97 @@ export function mountGallery(ctx) {
   exportBtn.addEventListener('click', () => ctx.openExport());
 
   /* 剔除重复图片：扫描全库（不受当前筛选影响），确认后删除多余副本 */
+  /* -------------------- 重新自动分类 -------------------- */
+  // 分类可以增删改，改了分类表之后旧图的分类就过时了。
+  // 这个按钮按当前分类表重新跑一遍关键词匹配，把每张图归到新分类。
+  reclassBtn.addEventListener('click', async () => {
+    const total = store.state.images.length;
+    const cats = store.state.categories;
+    if (!total) { toast('图库是空的', 'warn'); return; }
+    if (!cats.length) { toast('还没有分类，先建几个分类再试', 'warn'); return; }
+
+    const ok = await confirmReclassify(total, cats.length);
+    if (!ok) return;
+
+    reclassBtn.disabled = true;
+
+    // 进度弹窗（不可关闭：中途关掉会让人以为没跑完）
+    const fill = el('div', { class: 'reclass-bar-fill' });
+    const bar = el('div', { class: 'reclass-bar' });
+    bar.appendChild(fill);
+    const label = el('div', { class: 'muted', text: '准备中…' });
+    const box = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '10px' } });
+    box.appendChild(label);
+    box.appendChild(bar);
+    const progress = openModal({ title: '正在重新分类', content: box, dismissible: false });
+
+    try {
+      const stats = await store.reclassifyImages(
+        (img) => {
+          const guess = classifyPrompt(img.positive || '', cats);
+          return { categoryId: guess.categoryId || null, subCategoryId: guess.subCategoryId || null };
+        },
+        (done, all) => {
+          const pct = Math.round((done / all) * 100);
+          fill.style.width = `${pct}%`;
+          label.textContent = `${done} / ${all}（${pct}%）`;
+        }
+      );
+
+      progress.close();
+
+      const bits = [`共 ${stats.total} 张`, `改了 ${stats.changed} 张`];
+      if (stats.toUncategorized) bits.push(`其中 ${stats.toUncategorized} 张归入未分类`);
+      if (!stats.changed) bits.push('全部都没变');
+      toast(bits.join('，'), 'success');
+    } catch (err) {
+      progress.close();
+      console.error('[PromptVault] 重新分类失败', err);
+      toast(`重新分类失败：${err?.message || err}`, 'error');
+    } finally {
+      reclassBtn.disabled = false;
+    }
+  });
+
+  /**
+   * 重新分类的确认弹窗。做成自定义弹窗而不是 confirmDialog，
+   * 因为要把「不可逆」和具体影响分条列出来，光一行字容易看漏。
+   * @returns {Promise<boolean>}
+   */
+  function confirmReclassify(total, catCount) {
+    return new Promise((resolve) => {
+      const warn = el('div', { class: 'reclass-warn' });
+      warn.appendChild(el('strong', { text: '⚠ 此操作不可撤销' }));
+      warn.appendChild(el('div', {
+        class: 'muted',
+        text: `将按当前的 ${catCount} 个分类，重新判定全部 ${total} 张图片。`
+      }));
+      const ul = el('ul');
+      ul.appendChild(el('li', { text: '每张图会根据它的正向提示词重新匹配关键词' }));
+      ul.appendChild(el('li', { text: '现有的分类（包括你手动改过的）会被覆盖' }));
+      ul.appendChild(el('li', { text: '匹配不到关键词的图会变成「未分类」' }));
+      warn.appendChild(ul);
+
+      const body = el('div');
+      body.appendChild(warn);
+      body.appendChild(el('p', {
+        class: 'muted',
+        style: { margin: '0' },
+        text: '分类表改动越大，这个操作越有用。如果只是加了几张图，没必要跑。'
+      }));
+
+      const footer = el('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } });
+      const cancelBtn = el('button', { class: 'btn', type: 'button', text: '取消' });
+      const okBtn = el('button', { class: 'btn btn-primary', type: 'button', text: `重新分类 ${total} 张` });
+      footer.appendChild(cancelBtn);
+      footer.appendChild(okBtn);
+
+      const m = openModal({ title: '重新自动分类', content: body, footer });
+      cancelBtn.addEventListener('click', () => { m.close(); resolve(false); });
+      okBtn.addEventListener('click', () => { m.close(); resolve(true); });
+    });
+  }
+
   dupBtn.addEventListener('click', async () => {
     dupBtn.disabled = true;
     try {
