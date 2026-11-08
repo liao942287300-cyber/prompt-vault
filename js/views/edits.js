@@ -54,6 +54,39 @@ export function mountEdits(ctx) {
   const grid = el('div', { class: 'edit-grid' });
   root.appendChild(grid);
 
+  // 分页条：指令多了以后一页全渲染会卡
+  const pager = el('div', { class: 'asset-pager' });
+  root.appendChild(pager);
+
+  /** 当前页码（1 基）与每页条数 */
+  let page = 1;
+  const PAGE_SIZE = 48;
+
+  function renderPager(total, pages) {
+    pager.innerHTML = '';
+    if (pages <= 1) return;
+    const mkBtn = (label, target, disabled) => {
+      const btn = el('button', {
+        class: 'btn btn-sm', type: 'button', text: label,
+        disabled: disabled ? 'disabled' : null
+      });
+      btn.addEventListener('click', () => {
+        page = target;
+        render();
+        pager.scrollIntoView({ block: 'nearest' });
+      });
+      return btn;
+    };
+    pager.appendChild(mkBtn('上一页', Math.max(1, page - 1), page <= 1));
+    const from = (page - 1) * PAGE_SIZE + 1;
+    const to = Math.min(page * PAGE_SIZE, total);
+    pager.appendChild(el('span', {
+      class: 'asset-pager-info',
+      text: `第 ${from}-${to} 条 / 共 ${total} 条 · 第 ${page} / ${pages} 页`
+    }));
+    pager.appendChild(mkBtn('下一页', Math.min(pages, page + 1), page >= pages));
+  }
+
   newBtn.addEventListener('click', () => openEditor(null));
 
   /* ---------------------------- 编辑器 ---------------------------- */
@@ -292,9 +325,14 @@ export function mountEdits(ctx) {
       return;
     }
 
-    for (const item of list) {
+    const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+    page = Math.min(Math.max(1, page), pages);
+    const start = (page - 1) * PAGE_SIZE;
+
+    for (const item of list.slice(start, start + PAGE_SIZE)) {
       grid.appendChild(buildCard(item));
     }
+    renderPager(list.length, pages);
   }
 
   function buildCard(item) {

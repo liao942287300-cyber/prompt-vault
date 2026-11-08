@@ -155,6 +155,7 @@ function bindShortcuts() {
 
 function bindDragAndDrop() {
   const overlay = $('#drop-overlay');
+  const target = $('#drop-target');
   let depth = 0;
 
   const hasFiles = (event) => {
@@ -165,8 +166,52 @@ function bindDragAndDrop() {
   };
 
   const show = () => { overlay.hidden = false; };
-  const hide = () => { depth = 0; overlay.hidden = true; };
+  const hide = () => {
+    depth = 0;
+    overlay.hidden = true;
+    target?.classList.remove('is-over');
+  };
 
+  /* ------------------- 投放框：只有这里松手才导入 ------------------- */
+  // 遮罩是 pointer-events:none（不挡鼠标），只有 #drop-target 设了 auto。
+  // 所以手一滑掉在框外时，drop 事件只会落到 document 上 —— 那里只做
+  // preventDefault（防止浏览器直接打开文件），绝不导入。
+  if (target) {
+    target.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      target.classList.add('is-over');
+    });
+
+    target.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      target.classList.add('is-over');
+    });
+
+    target.addEventListener('dragleave', () => {
+      target.classList.remove('is-over');
+    });
+
+    target.addEventListener('drop', async (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      hide();
+      if (!transfer) return;
+      try {
+        await transfer.handleDroppedDataTransfer(e.dataTransfer);
+      } catch (err) {
+        console.error('[PromptVault] 拖拽导入失败', err);
+        toast('拖拽导入失败，请改用「导入」按钮', 'error');
+      }
+    });
+  }
+
+  /* ------------------- 全局：只负责显示遮罩，不导入 ------------------- */
   // 弹窗打开时不接管拖拽：避免拖到弹窗非粘贴区时穿透到全局链路
   // （遮罩闪现 + 静默导入，而弹窗表单仍是空的）。dragleave 也必须一起跳过，
   // 否则 depth 计数会失衡，导致遮罩残留。
@@ -180,7 +225,8 @@ function bindDragAndDrop() {
   document.addEventListener('dragover', (e) => {
     if (hasModal() || !hasFiles(e)) return;
     e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    // none = 光标显示「禁止」，明确告诉用户这里不能松手
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
   });
 
   document.addEventListener('dragleave', (e) => {
@@ -189,17 +235,11 @@ function bindDragAndDrop() {
     if (depth <= 0) hide();
   });
 
-  document.addEventListener('drop', async (e) => {
-    if (hasModal() || !hasFiles(e)) return;
+  // 关键：全局 drop 只拦截，不导入。落点在框外 = 什么都不发生。
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
     e.preventDefault();
     hide();
-    if (!transfer) return;
-    try {
-      await transfer.handleDroppedDataTransfer(e.dataTransfer);
-    } catch (err) {
-      console.error('[PromptVault] 拖拽导入失败', err);
-      toast('拖拽导入失败，请改用「导入」按钮', 'error');
-    }
   });
 
   // 防止浏览器直接打开被拖入的文件

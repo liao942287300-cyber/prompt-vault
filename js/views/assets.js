@@ -54,6 +54,10 @@ export function mountAssets(ctx) {
 
   /** 当前筛选分类 */
   let activeCat = 'all';
+  /** 当前页码（1 基） */
+  let page = 1;
+  /** 每页张数 —— 瀑布流一屏大约这么多，再多滚动就累 */
+  const PAGE_SIZE = 48;
   /** 本视图产生的 objectURL */
   let liveUrls = [];
   /** 拖拽期间临时保留的 objectURL（拖完再释放） */
@@ -105,6 +109,42 @@ export function mountAssets(ctx) {
   // 空状态放进列容器会被拆成好几段，必须放在外面。
   const emptyWrap = el('div', { class: 'asset-empty-wrap' });
   root.appendChild(emptyWrap);
+
+  // 分页条：资产图多了以后一页全渲染会明显卡顿，按页切片
+  const pager = el('div', { class: 'asset-pager' });
+  root.appendChild(pager);
+
+  /** 渲染分页条（只有一页时不显示） */
+  function renderPager(total, pages) {
+    pager.innerHTML = '';
+    if (pages <= 1) return;
+
+    const mkBtn = (label, target, disabled) => {
+      const btn = el('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        text: label,
+        disabled: disabled ? 'disabled' : null
+      });
+      btn.addEventListener('click', () => {
+        page = target;
+        render();
+        pager.scrollIntoView({ block: 'nearest' });
+      });
+      return btn;
+    };
+
+    pager.appendChild(mkBtn('上一页', Math.max(1, page - 1), page <= 1));
+
+    const from = (page - 1) * PAGE_SIZE + 1;
+    const to = Math.min(page * PAGE_SIZE, total);
+    pager.appendChild(el('span', {
+      class: 'asset-pager-info',
+      text: `第 ${from}-${to} 张 / 共 ${total} 张 · 第 ${page} / ${pages} 页`
+    }));
+
+    pager.appendChild(mkBtn('下一页', Math.min(pages, page + 1), page >= pages));
+  }
 
   /** 是否正在把卡片图拖出去（拖出到文件夹 / 聊天窗口，不该被当成导入） */
   let draggingCard = false;
@@ -280,6 +320,7 @@ export function mountAssets(ctx) {
       btn.appendChild(el('span', { class: 'asset-tab-count', text: String(count || 0) }));
       btn.addEventListener('click', () => {
         activeCat = key;
+        page = 1;        // 换分类回到第一页，否则可能停在空页
         render();
       });
       return btn;
@@ -303,9 +344,16 @@ export function mountAssets(ctx) {
       return;
     }
 
-    for (const item of list) {
+    // 分页切片：列表长了一页全渲染会卡（每张都要建 objectURL）
+    const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+    page = Math.min(Math.max(1, page), pages);
+    const start = (page - 1) * PAGE_SIZE;
+    const slice = list.slice(start, start + PAGE_SIZE);
+
+    for (const item of slice) {
       grid.appendChild(buildCard(item));
     }
+    renderPager(list.length, pages);
   }
 
   /** 显示空状态：网格是瀑布流，空状态必须挪到外面，否则会被列布局切成几段 */
@@ -314,6 +362,56 @@ export function mountAssets(ctx) {
     emptyWrap.hidden = false;
     emptyWrap.innerHTML = '';
     emptyWrap.appendChild(emptyState(title, desc));
+  }
+
+  /** 重命名 / 改分类（资产图原来只能看和删，不能改） */
+  function editAsset(item) {
+    const nameInput = el('input', {
+      class: 'input', type: 'text',
+      value: item.name || '',
+      placeholder: '资产图名称'
+    });
+
+    const catSelect = el('select', { class: 'select' });
+    store.ASSET_CATEGORIES.forEach((c) => {
+      catSelect.appendChild(el('option', {
+        value: c,
+        text: c,
+        selected: c === item.category ? 'selected' : null
+      }));
+    });
+
+    const body = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } });
+
+    const nameField = el('label', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } });
+    nameField.appendChild(el('span', { class: 'muted', text: '名称' }));
+    nameField.appendChild(nameInput);
+    body.appendChild(nameField);
+
+    const catField = el('label', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } });
+    catField.appendChild(el('span', { class: 'muted', text: '分类' }));
+    catField.appendChild(catSelect);
+    body.appendChild(catField);
+
+    const footer = el('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } });
+    const cancelBtn = el('button', { class: 'btn', type: 'button', text: '取消' });
+    const okBtn = el('button', { class: 'btn btn-primary', type: 'button', text: '保存' });
+    footer.appendChild(cancelBtn);
+    footer.appendChild(okBtn);
+
+    const m = openModal({ title: '编辑资产图', content: body, footer });
+
+    cancelBtn.addEventListener('click', () => m.close());
+
+    okBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      const category = catSelect.value;
+      await store.updateAsset(item.id, { name, category });
+      m.close();
+      toast('已保存', 'success');
+    });
+
+    setTimeout(() => { nameInput.focus(); nameInput.select(); }, 50);
   }
 
   function buildCard(item) {
@@ -350,6 +448,8 @@ export function mountAssets(ctx) {
 
     // 悬停操作条
     const acts = el('div', { class: 'asset-acts' });
+    const editBtn = el('button', { class: 'asset-act', type: 'button', title: '重命名 / 改分类', html: icon('pencil', 14) });
+    editBtn.addEventListener('click', (e) => { e.stopPropagation(); editAsset(item); });
     const copyBtn = el('button', { class: 'asset-act', type: 'button', title: '复制图片', html: icon('copy', 14) });
     copyBtn.addEventListener('click', (e) => { e.stopPropagation(); copyImage(item); });
     const dlBtn = el('button', { class: 'asset-act', type: 'button', title: '下载原图', html: icon('download', 14) });
@@ -364,6 +464,7 @@ export function mountAssets(ctx) {
       await store.removeAssets([item.id]);
       toast('已删除', 'success');
     });
+    acts.appendChild(editBtn);
     acts.appendChild(copyBtn);
     acts.appendChild(dlBtn);
     acts.appendChild(delBtn);

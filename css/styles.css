@@ -1344,6 +1344,21 @@ td[data-field].is-select { cursor: pointer; }
 }
 .drop-hint strong { font-size: 16px; color: var(--text); }
 
+/* 投放框：遮罩本身 pointer-events:none（不拦截），只有这个框能接住 drop。
+   松手在框外 = 不导入，避免手一滑就把图塞进某个分类。 */
+#drop-target {
+  pointer-events: auto;
+  cursor: copy;
+  transition: border-color .12s ease, background .12s ease, transform .12s ease;
+}
+#drop-target.is-over {
+  border-color: var(--accent-strong, var(--accent));
+  border-style: solid;
+  background: var(--accent-soft, var(--panel));
+  transform: scale(1.02);
+}
+#drop-target.is-over strong { color: var(--accent); }
+
 /* ------------------------- Word 文档导入预览 ------------------------- */
 .docx-bar {
   display: flex;

@@ -31,6 +31,13 @@ export function mountLoras(ctx) {
   /** 扫描中标记，避免重复点击 */
   let scanning = false;
 
+  /** 当前页码（1 基）与每页条数 —— LoRA 目录动辄几百个文件，必须分页 */
+  let page = 1;
+  const PAGE_SIZE = 60;
+
+  /** 当前按目录筛选（'' = 全部目录），由 relPath 的目录部分决定 */
+  let activeDir = '';
+
   /* ------------------------------ 骨架 ------------------------------ */
   const head = el('div', { class: 'mod-head' });
   head.appendChild(el('div', { class: 'mod-head-main' }, [
@@ -66,8 +73,53 @@ export function mountLoras(ctx) {
   const statLine = el('div', { class: 'mod-stat', text: '' });
   root.appendChild(statLine);
 
+  // 目录筛选条：把 loras 文件夹的子目录当分类用
+  const dirBar = el('div', { class: 'lora-dirbar' });
+  root.appendChild(dirBar);
+
   const listWrap = el('div', { class: 'lora-list' });
   root.appendChild(listWrap);
+
+  // 分页条
+  const pager = el('div', { class: 'asset-pager' });
+  root.appendChild(pager);
+
+  /** 取 LoRA 所在目录（'' 表示根目录） */
+  const dirOf = (lora) => {
+    const p = String(lora?.relPath || '');
+    const i = p.lastIndexOf('/');
+    return i >= 0 ? p.slice(0, i) : '';
+  };
+
+  /** 渲染分页条 */
+  function renderPager(total, pages) {
+    pager.innerHTML = '';
+    if (pages <= 1) return;
+
+    const mkBtn = (label, target, disabled) => {
+      const btn = el('button', {
+        class: 'btn btn-sm',
+        type: 'button',
+        text: label,
+        disabled: disabled ? 'disabled' : null
+      });
+      btn.addEventListener('click', () => {
+        page = target;
+        render();
+        pager.scrollIntoView({ block: 'nearest' });
+      });
+      return btn;
+    };
+
+    pager.appendChild(mkBtn('上一页', Math.max(1, page - 1), page <= 1));
+    const from = (page - 1) * PAGE_SIZE + 1;
+    const to = Math.min(page * PAGE_SIZE, total);
+    pager.appendChild(el('span', {
+      class: 'asset-pager-info',
+      text: `第 ${from}-${to} 个 / 共 ${total} 个 · 第 ${page} / ${pages} 页`
+    }));
+    pager.appendChild(mkBtn('下一页', Math.min(pages, page + 1), page >= pages));
+  }
 
   /* ---------------------------- 目录遍历 ---------------------------- */
 
@@ -298,7 +350,7 @@ export function mountLoras(ctx) {
     const snap = captureFocus();
     listWrap.innerHTML = '';
 
-    const list = store.filteredLoras();
+    let list = store.filteredLoras();
     const total = store.state.loras.length;
     const withTrigger = store.state.loras.filter((l) => (l.trigger || '').trim()).length;
     const dirName = store.state.loraDirName;
@@ -316,6 +368,44 @@ export function mountLoras(ctx) {
       if (store.state.search) bits.push(`筛选出 ${list.length} 个`);
     }
     statLine.textContent = bits.join(' · ');
+
+    /* -------------------- 目录筛选（把文件夹当分类用） -------------------- */
+    // relPath 形如「角色/古风/xxx.safetensors」，按目录分组，用户能像选分类一样选目录
+    const dirs = Array.from(new Set(
+      store.state.loras.map(dirOf).filter((d) => d !== '')
+    )).sort((a, b) => a.localeCompare(b, 'zh'));
+
+    dirBar.innerHTML = '';
+    if (dirs.length) {
+      // 当前选的目录被删了（换了映射目录）→ 回到全部
+      if (activeDir && !dirs.includes(activeDir)) activeDir = '';
+
+      const mkDirTab = (key, label, count) => {
+        const btn = el('button', {
+          class: `asset-tab${activeDir === key ? ' active' : ''}`,
+          type: 'button'
+        });
+        btn.appendChild(el('span', { text: label }));
+        btn.appendChild(el('span', { class: 'asset-tab-count', text: String(count) }));
+        btn.addEventListener('click', () => {
+          activeDir = key;
+          page = 1;
+          render();
+        });
+        return btn;
+      };
+
+      const rootCount = store.state.loras.filter((l) => dirOf(l) === '').length;
+      dirBar.appendChild(mkDirTab('', '全部目录', total));
+      dirs.forEach((d) => {
+        dirBar.appendChild(mkDirTab(d, d, store.state.loras.filter((l) => dirOf(l) === d).length));
+      });
+      if (rootCount) dirBar.appendChild(mkDirTab('__root__', '（根目录）', rootCount));
+    }
+
+    // 应用目录筛选
+    if (activeDir === '__root__') list = list.filter((l) => dirOf(l) === '');
+    else if (activeDir) list = list.filter((l) => dirOf(l) === activeDir);
 
     if (!total) {
       listWrap.appendChild(emptyState(
@@ -341,7 +431,13 @@ export function mountLoras(ctx) {
     header.appendChild(el('div', { class: 'lora-col-act', text: '' }));
     listWrap.appendChild(header);
 
-    for (const lora of list) {
+    // 分页切片（LoRA 目录几百个文件，一页全渲染会卡）
+    const pages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+    page = Math.min(Math.max(1, page), pages);
+    const start = (page - 1) * PAGE_SIZE;
+    const slice = list.slice(start, start + PAGE_SIZE);
+
+    for (const lora of slice) {
       const row = el('div', { class: 'lora-row' });
 
       const nameCell = el('div', { class: 'lora-col-name' });
@@ -396,6 +492,8 @@ export function mountLoras(ctx) {
 
       listWrap.appendChild(row);
     }
+
+    renderPager(list.length, pages);
 
     restoreFocus(snap);
   }

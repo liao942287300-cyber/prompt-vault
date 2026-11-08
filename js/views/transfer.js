@@ -2020,20 +2020,144 @@ export function mountTransfer(ctx) {
    * ================================================================== */
 
   /** 处理拖入的 DataTransfer */
+  /**
+   * 导入前询问分类。
+   *
+   * 为什么要有这一步：之前拖入直接用 `state.filter.categoryId`，但那个值
+   * 不带 catTouched 标记，`resolveCategory()` 里「按提示词自动推断」的优先级
+   * 排在它前面 —— 角色图提示词里几乎必有 `1girl`，于是不管拖到哪儿都被判成
+   * 「人物」。现在让用户显式确认一次：要么自己选分类（catTouched=true，
+   * 跳过自动推断），要么勾「自动识别」把决定权交给关键词表。
+   *
+   * @param {number} fileCount 待导入文件数（用于提示文案）
+   * @returns {Promise<{categoryId:string|null, subCategoryId:string|null, auto:boolean}|null>}
+   *          null 表示用户取消
+   */
+  function askImportCategory(fileCount) {
+    return new Promise((resolve) => {
+      const body = el('div', { class: 'import-ask' });
+      body.appendChild(el('p', {
+        class: 'muted',
+        style: { margin: '0 0 10px' },
+        text: `即将导入 ${fileCount} 个文件。选择存到哪个分类：`
+      }));
+
+      const picker = createCategoryPicker({
+        categoryId: store.state.filter.categoryId || null,
+        subCategoryId: store.state.filter.subCategoryId || null
+      });
+      body.appendChild(picker.node);
+
+      const autoWrap = el('label', { class: 'import-ask-auto' });
+      const autoBox = el('input', { type: 'checkbox' });
+      autoWrap.appendChild(autoBox);
+      autoWrap.appendChild(el('span', {
+        text: '按提示词自动识别分类（勾选后忽略上面的选择）'
+      }));
+      body.appendChild(autoWrap);
+
+      const footer = el('div', {
+        class: 'row',
+        style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' }
+      });
+      const cancelBtn = el('button', { class: 'btn', type: 'button', text: '取消' });
+      const okBtn = el('button', { class: 'btn btn-primary', type: 'button', text: '导入' });
+      footer.appendChild(cancelBtn);
+      footer.appendChild(okBtn);
+
+      const m = openModal({ title: '导入图片', content: body, footer });
+
+      cancelBtn.addEventListener('click', () => {
+        m.close();
+        resolve(null);
+      });
+
+      okBtn.addEventListener('click', () => {
+        const v = picker.value();
+        m.close();
+        resolve({
+          categoryId: v.categoryId || null,
+          subCategoryId: v.subCategoryId || null,
+          auto: Boolean(autoBox.checked)
+        });
+      });
+    });
+  }
+
   async function handleDroppedDataTransfer(dataTransfer) {
     const files = await filesFromDataTransfer(dataTransfer);
     if (!files.length) { toast('没有识别到可导入的文件', 'warn'); return; }
+
+    // 资产图页面拖入 → 进资产图集合，不进图库
+    if (store.state.view === 'assets') {
+      await importIntoAssets(files);
+      return;
+    }
+
+    const imageCount = files.filter(isImageFile).length;
+    const choice = await askImportCategory(imageCount || files.length);
+    if (!choice) return;   // 用户取消
+
     const target = {
-      categoryId: store.state.filter.categoryId || null,
-      subCategoryId: store.state.filter.subCategoryId || null
+      categoryId: choice.categoryId,
+      subCategoryId: choice.subCategoryId,
+      // 手动选了分类 → 告诉 resolveCategory「别自动推断」
+      catTouched: !choice.auto,
+      autoClassify: choice.auto
     };
-    toast(`开始导入 ${files.filter(isImageFile).length} 个文件…`, 'info');
+
+    toast(`开始导入 ${imageCount} 个文件…`, 'info');
     const before = store.state.images.length;
     const result = await importImageFiles(files, target);
     const added = store.state.images.length - before;
     const parts = [`新增 ${added} 张`];
     if (result.skipped) parts.push(`跳过重复 ${result.skipped} 张`);
     toast(`导入完成：${parts.join('，')}${autoStatsSuffix(result)}`, 'success');
+  }
+
+  /** 把文件导入到「资产图」集合（资产图页拖入时走这里，不进图库） */
+  async function importIntoAssets(files) {
+    const images = files.filter(isImageFile);
+    if (!images.length) { toast('没有识别到图片文件', 'warn'); return; }
+
+    const targetCat = store.ASSET_CATEGORIES[0];
+    const known = store.assetHashSet();
+    const records = [];
+    let skipped = 0;
+
+    for (const file of images) {
+      try {
+        const hash = await sha256Hex(file);
+        if (hash && known.has(hash)) { skipped += 1; continue; }
+        // 缩略图只用于列表展示；blob 保留原始文件，不做压缩
+        const { thumb, width, height } = await genThumbnail(file, 480, 0.82);
+        records.push({
+          name: baseNameNoExt(file.name) || '未命名',
+          category: targetCat,
+          blob: file,
+          thumb: thumb || null,
+          mime: file.type || 'image/*',
+          width: width || 0,
+          height: height || 0,
+          size: file.size,
+          hash
+        });
+        if (hash) known.add(hash);
+      } catch (err) {
+        console.error('[PromptVault] 资产图处理失败', file.name, err);
+      }
+      // 让出主线程，大批量时不至于卡死界面
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    if (!records.length) {
+      toast(skipped ? `这批图片都已存在（跳过 ${skipped} 张）` : '没有可添加的图片', skipped ? 'info' : 'warn');
+      return;
+    }
+    await store.addAssets(records);
+    const parts = [`新增 ${records.length} 张资产图`];
+    if (skipped) parts.push(`跳过重复 ${skipped} 张`);
+    toast(`${parts.join('，')}（原图存储，未压缩）`, 'success');
   }
 
   /** 处理拖入的 FileList */

@@ -76,6 +76,9 @@ export function mountSidebar(ctx) {
       const level = Number(row.dataset.catLevel);
       if (level === 2) store.selectSubCategory(id);
       else store.selectCategory(id);
+      // 在 LORA / 资产图 / 编辑指令 / 模板这些模块页点分类时，要切回图库 ——
+      // 否则只改了筛选条件，页面还停在模块页，看起来像「点了没反应」。
+      if (store.state.view !== 'gallery') store.setView('gallery');
     }
   });
 
