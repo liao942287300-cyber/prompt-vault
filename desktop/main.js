@@ -1,8 +1,10 @@
 const {
-  app, BrowserWindow, protocol, session, dialog, shell, Menu, screen
+  app, BrowserWindow, protocol, session, dialog, shell, Menu, screen,
+  ipcMain, nativeImage
 } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 // 本地数据桥：127.0.0.1 上的只读 HTTP 服务，供 ComfyUI 插件拉取提示词/图片。
 // 它只做转发（HTTP → 渲染进程 window.PV_API），不碰任何业务数据。
 const { startBridgeServer, stopBridgeServer } = require('./bridge-server');
@@ -342,6 +344,51 @@ app.on('window-all-closed', () => {
 // 退出前确保端口释放（close 是异步的，但 closeAllConnections 会立即断开）
 app.on('before-quit', () => {
   stopBridgeServer().catch(() => {});
+});
+
+/**
+ * 资产图拖出到系统。
+ *
+ * 渲染层把原图字节传过来，这里落一个临时文件，再用 webContents.startDrag()
+ * 交给系统 —— 资源管理器 / 微信 / PS 拿到的都是磁盘上的真实文件（原图）。
+ *
+ * 为什么不用 HTML5 拖拽：卡片显示缩略图，拖 <img> 时 Chromium 会把 img.src
+ * 预置成 dataTransfer 的 file 项，目标应用取到的就是缩略图；而
+ * DataTransferItemList.remove() 在真实拖拽会话里会破坏 dataTransfer，
+ * 导致"拖拽失败、网页毫无反应"。所以走 Electron 官方这条路。
+ */
+ipcMain.handle('pv:drag-asset', async (event, payload) => {
+  const { fileName, mime, data, iconData } = payload || {};
+  try {
+    if (!data) return { ok: false, error: '没有图片数据' };
+
+    // 文件名里不能有 Windows 非法字符，否则临时文件创建失败
+    const safeName = String(fileName || 'asset.png').replace(/[\\/:*?"<>|]/g, '_');
+    const tmpDir = path.join(os.tmpdir(), 'promptvault-drag');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = path.join(tmpDir, `${Date.now()}-${safeName}`);
+    fs.writeFileSync(tmpPath, Buffer.from(data));
+
+    // 拖拽时跟随鼠标的小图标：优先用缩略图，没有就用空图标
+    let icon = nativeImage.createEmpty();
+    if (iconData) {
+      try {
+        const img = nativeImage.createFromBuffer(Buffer.from(iconData));
+        if (!img.isEmpty()) icon = img.resize({ width: 96, height: 96 });
+      } catch (err) { /* 图标只是锦上添花，失败不影响拖出 */ }
+    }
+
+    event.sender.startDrag({ file: tmpPath, icon });
+
+    // 目标应用读完才删；给足时间，避免拖到一半文件没了
+    setTimeout(() => {
+      try { fs.unlinkSync(tmpPath); } catch (err) { /* 已被清理 */ }
+    }, 60 * 1000);
+
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
 });
 
 app.whenReady().then(() => {

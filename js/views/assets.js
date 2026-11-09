@@ -671,16 +671,10 @@ export function mountAssets(ctx) {
     const thumbBox = el('div', { class: 'asset-thumb' });
     const src = item.thumb || item.blob;
     if (src) {
-      // ⚠️ 拖拽源必须是这个 div，不能是 <img> 本身。
-      // 拖 <img> 时 Chromium 会把它 src（缩略图）自动做成一个 file 项塞进 dataTransfer，
-      // 真实拖拽会话里再 items.remove() 会把整个拖拽数据搞坏（资源管理器报"拖拽失败"）。
-      // 把 draggable 放在外层 div、img 设 draggable=false，浏览器就不会预置任何 file 项，
-      // 我们自己 add 的原图就是唯一一项。
-      thumbBox.setAttribute('draggable', 'true');
-      const img = el('img', { src: useUrl(src), alt: item.name || '', loading: 'lazy', draggable: 'false' });
-      // 拖出：往 dataTransfer 里塞「原图 File 对象」，这样资源管理器 / 微信 / Discord
-      // 等任意支持文件拖放的目标拿到的都是原图，而不是卡片上显示的缩略图。
-      thumbBox.addEventListener('dragstart', (e) => {
+      const img = el('img', { src: useUrl(src), alt: item.name || '', loading: 'lazy', draggable: 'true' });
+      // 拖出原图。桌面客户端走 Electron 的 startDrag（主进程落临时文件交给系统），
+      // 浏览器模式下退化成 HTML5 拖拽。
+      img.addEventListener('dragstart', async (e) => {
         if (!item.blob || !e.dataTransfer) return;
         // 标记「这是卡片拖出」，页面内的 drop 一律忽略，否则会把自己又导入一张
         draggingCard = true;
@@ -689,39 +683,44 @@ export function mountAssets(ctx) {
         const fileName = `${item.name || 'asset'}.${ext}`;
         const mime = item.mime || 'image/png';
 
-        /* ---- ① 关键：塞真实的 File 对象（原图） ----
-         * 为什么不能只靠 DownloadURL：那是 Chromium 私有格式，只有 Chrome/Edge
-         * 自己的内部逻辑（拖到网页、拖到下载栏）认它。Windows 资源管理器、微信、
-         * 微信输入法、PS 等第三方目标完全不认 DownloadURL，它们会退回读
-         * dataTransfer 里的 Files —— 而拖 <img> 时 Chromium 会自动把该 img 的
-         * src 内容做成一个 File 项塞进去。img.src 指向的是缩略图（列表必须用
-         * 缩略图省内存，1.7 万张不能全量解码原图），所以资源管理器落地的就是
-         * 缩略图。这里显式 items.add(原图 File) 覆盖掉那个默认项。
-         * 注意：items 只在 dragstart 期间可写，之后变只读，所以必须同步调用。
+        /* ---- 桌面客户端：Electron startDrag ----
+         * 唯一能保证「目标拿到原图」的路径：主进程把字节写成临时文件，
+         * 再用 webContents.startDrag 把文件交给系统，资源管理器 / 微信 / PS 都认。
+         *
+         * 为什么不走 HTML5（两次踩坑）：
+         *   ① 拖 <img> 时 Chromium 把 img.src（缩略图）预置成 file 项，
+         *      资源管理器取到的就是缩略图；
+         *   ② 用 items.remove() 删掉那个预置项 —— 真实拖拽会话里会破坏
+         *      dataTransfer，直接拖失败、网页毫无反应；
+         *   ③ 把 draggable 挪到外层 div、img 设 draggable=false —— 鼠标按在
+         *      img 上时 Chromium 认为命中元素不可拖，压根不启动拖拽。
          */
-        try {
-          const file = new File([item.blob], fileName, { type: mime });
-          e.dataTransfer.items.add(file);
-        } catch (err) {
-          // 极少数环境不支持 items.add，退回只靠下面的 DownloadURL
-          console.warn('[PromptVault] 拖出原图失败，退回 DownloadURL', err);
+        const bridge = window.promptvaultDesktop;
+        if (bridge && typeof bridge.startDragAsset === 'function') {
+          e.preventDefault();   // 必须同步阻止，否则浏览器默认拖拽会先启动
+          try {
+            const data = await item.blob.arrayBuffer();
+            const iconData = item.thumb ? await item.thumb.arrayBuffer() : null;
+            const res = await bridge.startDragAsset(fileName, mime, data, iconData);
+            if (!res || !res.ok) {
+              console.warn('[PromptVault] 拖出原图失败', res && res.error);
+            }
+          } catch (err) {
+            console.warn('[PromptVault] 拖出原图失败', err);
+          }
+          return;
         }
 
-        /* ---- ② DownloadURL 保留 ----
-         * Chrome/Edge 内部链路（拖到网页、下载栏）认这个，文件名和 mime 更准确。
-         * 它和上面的 File 项不冲突：认 Files 的目标用 File，认 DownloadURL 的用它。
-         */
+        /* ---- 浏览器模式降级：HTML5 拖拽 ---- */
         const url = URL.createObjectURL(item.blob);
         dragUrls.add(url);
         e.dataTransfer.effectAllowed = 'copy';
         try {
           e.dataTransfer.setData('DownloadURL', `${mime}:${fileName}:${url}`);
         } catch (err) { /* 个别环境禁止自定义类型，忽略 */ }
-
-        /* ---- ③ 缩略图只做拖拽时的视觉预览，不参与数据传输 ---- */
-        try { e.dataTransfer.setDragImage(img, 40, 40); } catch (err) { /* 部分环境不支持，忽略 */ }
+        try { e.dataTransfer.setDragImage(img, 40, 40); } catch (err) { /* 部分环境不支持 */ }
       });
-      thumbBox.addEventListener('dragend', () => {
+      img.addEventListener('dragend', () => {
         draggingCard = false;
         // 拖拽结束后延迟释放，避免目标应用还没读完
         setTimeout(() => {
