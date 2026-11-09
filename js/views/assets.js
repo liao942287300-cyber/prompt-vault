@@ -671,10 +671,16 @@ export function mountAssets(ctx) {
     const thumbBox = el('div', { class: 'asset-thumb' });
     const src = item.thumb || item.blob;
     if (src) {
-      const img = el('img', { src: useUrl(src), alt: item.name || '', loading: 'lazy', draggable: 'true' });
+      // ⚠️ 拖拽源必须是这个 div，不能是 <img> 本身。
+      // 拖 <img> 时 Chromium 会把它 src（缩略图）自动做成一个 file 项塞进 dataTransfer，
+      // 真实拖拽会话里再 items.remove() 会把整个拖拽数据搞坏（资源管理器报"拖拽失败"）。
+      // 把 draggable 放在外层 div、img 设 draggable=false，浏览器就不会预置任何 file 项，
+      // 我们自己 add 的原图就是唯一一项。
+      thumbBox.setAttribute('draggable', 'true');
+      const img = el('img', { src: useUrl(src), alt: item.name || '', loading: 'lazy', draggable: 'false' });
       // 拖出：往 dataTransfer 里塞「原图 File 对象」，这样资源管理器 / 微信 / Discord
       // 等任意支持文件拖放的目标拿到的都是原图，而不是卡片上显示的缩略图。
-      img.addEventListener('dragstart', (e) => {
+      thumbBox.addEventListener('dragstart', (e) => {
         if (!item.blob || !e.dataTransfer) return;
         // 标记「这是卡片拖出」，页面内的 drop 一律忽略，否则会把自己又导入一张
         draggingCard = true;
@@ -694,19 +700,10 @@ export function mountAssets(ctx) {
          * 注意：items 只在 dragstart 期间可写，之后变只读，所以必须同步调用。
          */
         try {
-          const dt = e.dataTransfer;
-          // 先清掉浏览器可能已经预置的 file 类项（就是那张缩略图），
-          // 避免 items 里同时出现「缩略图 + 原图」，目标应用取第一个就又错了。
-          // 只清 kind === 'file' 的项，别动文本类数据。
-          if (dt.items && typeof dt.items.remove === 'function') {
-            for (let i = dt.items.length - 1; i >= 0; i -= 1) {
-              if (dt.items[i] && dt.items[i].kind === 'file') dt.items.remove(i);
-            }
-          }
           const file = new File([item.blob], fileName, { type: mime });
-          dt.items.add(file);
+          e.dataTransfer.items.add(file);
         } catch (err) {
-          // 极少数环境不支持 items.add / items.remove，退回只靠下面的 DownloadURL
+          // 极少数环境不支持 items.add，退回只靠下面的 DownloadURL
           console.warn('[PromptVault] 拖出原图失败，退回 DownloadURL', err);
         }
 
@@ -724,7 +721,7 @@ export function mountAssets(ctx) {
         /* ---- ③ 缩略图只做拖拽时的视觉预览，不参与数据传输 ---- */
         try { e.dataTransfer.setDragImage(img, 40, 40); } catch (err) { /* 部分环境不支持，忽略 */ }
       });
-      img.addEventListener('dragend', () => {
+      thumbBox.addEventListener('dragend', () => {
         draggingCard = false;
         // 拖拽结束后延迟释放，避免目标应用还没读完
         setTimeout(() => {
