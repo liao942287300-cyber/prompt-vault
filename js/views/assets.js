@@ -164,7 +164,8 @@ export function mountAssets(ctx) {
 
   /* ---------------------------- 拖拽拦截 ----------------------------
    * 资产视图内的拖入是「添加资产图」，不能冒泡到全局链路（那会导进主图库）。
-   * 卡片自身的拖出（DownloadURL）也会带 Files 类型，必须用 draggingCard 排除，
+   * 卡片自身的拖出也会带 Files 类型（dragstart 里塞了原图 File，Chromium 拖 <img>
+   * 本身也会带一个文件项），必须用 draggingCard 排除，
    * 否则在页面内松手会把自己又导入一张。
    */
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((type) => {
@@ -671,17 +672,56 @@ export function mountAssets(ctx) {
     const src = item.thumb || item.blob;
     if (src) {
       const img = el('img', { src: useUrl(src), alt: item.name || '', loading: 'lazy', draggable: 'true' });
-      // 拖出：Chrome / Edge 支持 DownloadURL，可直接拖到资源管理器或聊天窗口
+      // 拖出：往 dataTransfer 里塞「原图 File 对象」，这样资源管理器 / 微信 / Discord
+      // 等任意支持文件拖放的目标拿到的都是原图，而不是卡片上显示的缩略图。
       img.addEventListener('dragstart', (e) => {
         if (!item.blob || !e.dataTransfer) return;
         // 标记「这是卡片拖出」，页面内的 drop 一律忽略，否则会把自己又导入一张
         draggingCard = true;
+
         const ext = extFromMime(item.mime) || 'png';
         const fileName = `${item.name || 'asset'}.${ext}`;
+        const mime = item.mime || 'image/png';
+
+        /* ---- ① 关键：塞真实的 File 对象（原图） ----
+         * 为什么不能只靠 DownloadURL：那是 Chromium 私有格式，只有 Chrome/Edge
+         * 自己的内部逻辑（拖到网页、拖到下载栏）认它。Windows 资源管理器、微信、
+         * 微信输入法、PS 等第三方目标完全不认 DownloadURL，它们会退回读
+         * dataTransfer 里的 Files —— 而拖 <img> 时 Chromium 会自动把该 img 的
+         * src 内容做成一个 File 项塞进去。img.src 指向的是缩略图（列表必须用
+         * 缩略图省内存，1.7 万张不能全量解码原图），所以资源管理器落地的就是
+         * 缩略图。这里显式 items.add(原图 File) 覆盖掉那个默认项。
+         * 注意：items 只在 dragstart 期间可写，之后变只读，所以必须同步调用。
+         */
+        try {
+          const dt = e.dataTransfer;
+          // 先清掉浏览器可能已经预置的 file 类项（就是那张缩略图），
+          // 避免 items 里同时出现「缩略图 + 原图」，目标应用取第一个就又错了。
+          // 只清 kind === 'file' 的项，别动文本类数据。
+          if (dt.items && typeof dt.items.remove === 'function') {
+            for (let i = dt.items.length - 1; i >= 0; i -= 1) {
+              if (dt.items[i] && dt.items[i].kind === 'file') dt.items.remove(i);
+            }
+          }
+          const file = new File([item.blob], fileName, { type: mime });
+          dt.items.add(file);
+        } catch (err) {
+          // 极少数环境不支持 items.add / items.remove，退回只靠下面的 DownloadURL
+          console.warn('[PromptVault] 拖出原图失败，退回 DownloadURL', err);
+        }
+
+        /* ---- ② DownloadURL 保留 ----
+         * Chrome/Edge 内部链路（拖到网页、下载栏）认这个，文件名和 mime 更准确。
+         * 它和上面的 File 项不冲突：认 Files 的目标用 File，认 DownloadURL 的用它。
+         */
         const url = URL.createObjectURL(item.blob);
         dragUrls.add(url);
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('DownloadURL', `${item.mime || 'image/png'}:${fileName}:${url}`);
+        try {
+          e.dataTransfer.setData('DownloadURL', `${mime}:${fileName}:${url}`);
+        } catch (err) { /* 个别环境禁止自定义类型，忽略 */ }
+
+        /* ---- ③ 缩略图只做拖拽时的视觉预览，不参与数据传输 ---- */
         try { e.dataTransfer.setDragImage(img, 40, 40); } catch (err) { /* 部分环境不支持，忽略 */ }
       });
       img.addEventListener('dragend', () => {
