@@ -324,7 +324,8 @@ export function mountAssets(ctx) {
     emptyWrap.hidden = true;
     emptyWrap.innerHTML = '';
 
-    const counts = store.assetCounts();
+    // 分类栏的计数按当前选中的项目过滤（项目 → 分类联动）
+    const counts = store.assetCounts(activeProject);
 
     /* 分类 tab */
     const mkTab = (key, label, count) => {
@@ -346,7 +347,8 @@ export function mountAssets(ctx) {
 
     /* 项目 tab —— 独立维度，和分类做交集筛选 */
     projectBar.innerHTML = '';
-    const projCounts = store.assetProjectCounts();
+    // 项目栏的计数按当前选中的分类过滤（分类 → 项目联动）
+    const projCounts = store.assetProjectCounts(activeCat);
     const mkProj = (key, label, count) => {
       const btn = el('button', {
         class: `asset-tab${activeProject === key ? ' active' : ''}`,
@@ -365,7 +367,12 @@ export function mountAssets(ctx) {
     projectBar.appendChild(el('span', { class: 'asset-projects-label', text: '项目' }));
     projectBar.appendChild(mkProj('all', '全部', projCounts.all));
     store.assetProjectList().forEach((p) => projectBar.appendChild(mkProj(p, p, projCounts[p] || 0)));
-    if (projCounts.__none__) projectBar.appendChild(mkProj('__none__', '未分项目', projCounts.__none__));
+    // 「未分项目」没有图时不占位；但如果它正是当前选中的项目，必须保留 ——
+    // 计数现在跟着 activeCat 走，一旦切到「未分项目为 0」的分类，tab 会消失，
+    // 而 activeProject 仍是 '__none__'，用户就看不到也点不掉这个筛选了（死锁）。
+    if (projCounts.__none__ || activeProject === '__none__') {
+      projectBar.appendChild(mkProj('__none__', '未分项目', projCounts.__none__));
+    }
 
     const addProjBtn = el('button', { class: 'asset-tab asset-tab-add', type: 'button', text: '+ 新建项目' });
     addProjBtn.addEventListener('click', async () => {
@@ -391,8 +398,17 @@ export function mountAssets(ctx) {
     const list = store.filteredAssets(activeCat, activeProject);
     const total = store.state.assets.length;
     const totalSize = store.state.assets.reduce((s, a) => s + (Number(a.size) || 0), 0);
+    // 筛选生效时主口径要跟着筛选走，否则「共 12 张」会和分类栏的「全部 5」自相矛盾。
+    // 保留「共 N 张」让用户知道库里一共多少，只把「筛出多少 + 这些的体积」追加在后面。
+    const filtering = activeCat !== 'all' || activeProject !== 'all' || Boolean(store.state.search);
+    let listSize = 0;
+    if (filtering) {
+      listSize = list.reduce((s, a) => s + (Number(a.size) || 0), 0);
+    }
     statLine.textContent = total
-      ? `共 ${total} 张，原图合计 ${formatBytes(totalSize)}（未压缩存储）${store.state.search ? `，当前筛选出 ${list.length} 张` : ''}`
+      ? (filtering
+        ? `共 ${total} 张，当前筛选出 ${list.length} 张，合计 ${formatBytes(listSize)}`
+        : `共 ${total} 张，原图合计 ${formatBytes(totalSize)}（未压缩存储）`)
       : '';
 
     if (!total) {

@@ -1407,23 +1407,49 @@ export function filteredAssets(category, project) {
   });
 }
 
-/** 各分类下的资产图数量 */
-export function assetCounts() {
-  const out = { all: state.assets.length };
+/**
+ * 各分类下的资产图数量。
+ *
+ * 分类栏和项目栏是「双向联动」的两个维度：选中某个项目后，分类栏要显示
+ * 该项目下的分类计数，而不是全库计数。所以这里接受一个可选的 project 过滤。
+ *
+ * @param {string} [project] 只统计该项目下的图：'all'/空 = 全部，
+ *        '__none__' = 未分项目，其余为项目名。不传 = 全部（管理弹窗用）
+ * @returns {Record<string, number>} 形如 { all: 12, 角色四视图: 6, ... }
+ */
+export function assetCounts(project) {
+  const proj = project || 'all';
+  const list = proj === 'all' ? state.assets : state.assets.filter((a) => {
+    const p = a.project || '';
+    if (proj === '__none__') return !p;
+    return p === proj;
+  });
+
+  const out = { all: list.length };
   // 用动态列表，用户新建的分类也要有计数（原来用硬编码的 ASSET_CATEGORIES）
   assetCategoryList().forEach((c) => { out[c] = 0; });
-  state.assets.forEach((a) => {
+  list.forEach((a) => {
     if (out[a.category] === undefined) out[a.category] = 0;
     out[a.category] += 1;
   });
   return out;
 }
 
-/** 各项目下的资产图数量（__none__ = 未分项目） */
-export function assetProjectCounts() {
-  const out = { all: state.assets.length, __none__: 0 };
+/**
+ * 各项目下的资产图数量（__none__ = 未分项目）。
+ *
+ * 与 assetCounts 对称：选中某个分类后，项目栏要显示该分类下的项目计数。
+ *
+ * @param {string} [category] 只统计该分类下的图：'all'/空 = 全部。不传 = 全部
+ * @returns {Record<string, number>} 形如 { all: 12, __none__: 2, 项目A: 5 }
+ */
+export function assetProjectCounts(category) {
+  const cat = category || 'all';
+  const list = cat === 'all' ? state.assets : state.assets.filter((a) => a.category === cat);
+
+  const out = { all: list.length, __none__: 0 };
   state.assetProjects.forEach((p) => { out[p] = 0; });
-  state.assets.forEach((a) => {
+  list.forEach((a) => {
     const p = a.project || '';
     if (!p) { out.__none__ += 1; return; }
     if (out[p] === undefined) out[p] = 0;
