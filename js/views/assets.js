@@ -369,8 +369,11 @@ export function mountAssets(ctx) {
 
     const addProjBtn = el('button', { class: 'asset-tab asset-tab-add', type: 'button', text: '+ 新建项目' });
     addProjBtn.addEventListener('click', async () => {
-      const name = await promptDialog('新项目名称', { title: '新建项目', placeholder: '例如：某角色设定集' });
-      if (!name) return;
+      // promptDialog(message, defaultValue, opts) —— 第二个参数是默认值，不是选项。
+      // 这里原来把选项对象当成了 defaultValue，输入框会被填成 "[object Object]"，
+      // 标题和 placeholder 也一起失效。
+      const name = await promptDialog('新项目名称', '', { title: '新建项目', placeholder: '例如：某角色设定集' });
+      if (name === null) return;
       const r = await store.addAssetProject(name);
       if (!r.ok) { toast(r.error, 'warn'); return; }
       activeProject = String(name).trim();
@@ -442,8 +445,15 @@ export function mountAssets(ctx) {
 
         const renameBtn = el('button', { class: 'cat-act', type: 'button', title: '重命名', html: icon('pencil', 13) });
         renameBtn.addEventListener('click', async () => {
-          const next = prompt(`重命名项目「${name}」`, name);
-          if (next === null) return;
+          // 不能用原生 prompt()：Electron 渲染进程默认禁用 window.prompt，
+          // 调用后不弹任何窗口、直接返回 null，表现就是"点重命名没反应"。
+          // 统一用项目自己的 promptDialog（取消返回 null，确定返回去空格后的非空字符串）。
+          const next = await promptDialog(`重命名项目「${name}」`, name, {
+            title: '重命名项目',
+            placeholder: '项目名称',
+            okText: '重命名'
+          });
+          if (next === null) return;   // 用户取消：什么都不做（不要当成"改成空字符串"）
           const r = await store.renameAssetProject(name, next);
           if (!r.ok) { toast(r.error, 'warn'); return; }
           toast(`已重命名，${r.updated} 张图同步更新`, 'success');
@@ -502,12 +512,19 @@ export function mountAssets(ctx) {
 
         const renameBtn = el('button', { class: 'cat-act', type: 'button', title: '重命名', html: icon('pencil', 13) });
         renameBtn.addEventListener('click', async () => {
-          const next = prompt(`重命名分类「${name}」`, name);
-          if (next === null) return;
+          // 同上：Electron 里原生 prompt() 恒返回 null，必须用 promptDialog。
+          const next = await promptDialog(`重命名分类「${name}」`, name, {
+            title: '重命名分类',
+            placeholder: '分类名称',
+            okText: '重命名'
+          });
+          if (next === null) return;   // 用户取消
           const r = await store.renameAssetCategory(name, next);
           if (!r.ok) { toast(r.error, 'warn'); return; }
           toast(`已重命名，${r.updated} 张图同步更新`, 'success');
+          if (activeCat === name) activeCat = String(next).trim();
           renderList();
+          render();
         });
 
         const delBtn = el('button', { class: 'cat-act danger', type: 'button', title: '删除', html: icon('trash', 13) });

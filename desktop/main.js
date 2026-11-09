@@ -142,6 +142,10 @@ function createWindow() {
     minHeight: 640,
     backgroundColor: '#f5f6f8',
     show: false,
+    // 应用菜单在 app.whenReady 里已被 Menu.setApplicationMenu(null) 彻底移除，
+    // 这里保留 autoHideMenuBar 只是双保险：万一将来有代码又设置了菜单，
+    // 至少不会在窗口顶部常驻一条菜单栏（但注意它只是"隐藏"，按 Alt 仍会浮出，
+    // 所以真正解决问题的是 setApplicationMenu(null)，不是这个选项）。
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'build', 'icon.ico'),
     webPreferences: {
@@ -241,6 +245,52 @@ function createWindow() {
     });
   });
 
+  // ---------------------------------------------------------------- 快捷键
+  // 应用菜单已被移除（见 app.whenReady 里的 Menu.setApplicationMenu(null)），
+  // 原来挂在菜单项上的 accelerator 会随之全部失效。这里用 before-input-event
+  // 把真正会用到的几个补回来：
+  //   · Ctrl + / Ctrl - / Ctrl 0 —— 缩放（看图很依赖，删掉就是功能回退）
+  //   · F12 / Ctrl+Shift+I       —— 开发者工具（仅开发态）
+  //   · Ctrl+R / Ctrl+Shift+R    —— 重新加载（仅开发态）
+  // before-input-event 只在渲染层拦截按键，不注册全局热键，不会影响系统里
+  // 其它程序，也不产生任何可见的 UI。
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const wc = mainWindow && mainWindow.webContents;
+    if (!wc) return;
+    const ctrl = input.control || input.meta;
+
+    // 缩放：Ctrl+Plus / Ctrl+- / Ctrl+0
+    if (ctrl && (input.key === '=' || input.key === '+')) {
+      event.preventDefault();
+      wc.setZoomLevel(Math.min(wc.getZoomLevel() + 0.5, 5));
+      return;
+    }
+    if (ctrl && (input.key === '-' || input.key === '_')) {
+      event.preventDefault();
+      wc.setZoomLevel(Math.max(wc.getZoomLevel() - 0.5, -5));
+      return;
+    }
+    if (ctrl && input.key === '0') {
+      event.preventDefault();
+      wc.setZoomLevel(0);
+      return;
+    }
+
+    // 以下只在开发态开放，正式包里不提供
+    if (!isDev) return;
+    if (input.key === 'F12' || (ctrl && input.shift && (input.key === 'I' || input.key === 'i'))) {
+      event.preventDefault();
+      wc.toggleDevTools();
+      return;
+    }
+    if (ctrl && (input.key === 'R' || input.key === 'r')) {
+      event.preventDefault();
+      if (input.shift) wc.reloadIgnoringCache();
+      else wc.reload();
+    }
+  });
+
   // 启动本地数据桥（供 ComfyUI 插件读取提示词/图片）。
   // 失败（例如 8765-8775 全被占用）只会打日志，绝不影响应用启动；
   // 因此这里不 await，也不把异常往上抛。
@@ -253,79 +303,23 @@ function createWindow() {
   });
 }
 
-function buildMenu() {
-  const template = [
-    {
-      label: '文件',
-      submenu: [
-        {
-          label: '重新加载',
-          accelerator: 'CmdOrCtrl+R',
-          visible: isDev,
-          click: () => mainWindow && mainWindow.reload()
-        },
-        {
-          label: '强制重新加载',
-          accelerator: 'CmdOrCtrl+Shift+R',
-          visible: isDev,
-          click: () => mainWindow && mainWindow.webContents.reloadIgnoringCache()
-        },
-        { type: 'separator', visible: isDev },
-        {
-          label: '开发者工具',
-          accelerator: 'F12',
-          visible: isDev,
-          click: () => mainWindow && mainWindow.webContents.toggleDevTools()
-        },
-        { type: 'separator' },
-        {
-          label: '退出',
-          accelerator: 'Alt+F4',
-          click: () => app.quit()
-        }
-      ]
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { label: '撤销', role: 'undo' },
-        { label: '重做', role: 'redo' },
-        { type: 'separator' },
-        { label: '剪切', role: 'cut' },
-        { label: '复制', role: 'copy' },
-        { label: '粘贴', role: 'paste' },
-        { label: '全选', role: 'selectAll' }
-      ]
-    },
-    {
-      label: '视图',
-      submenu: [
-        { label: '放大', role: 'zoomIn', accelerator: 'CmdOrCtrl+Plus' },
-        { label: '缩小', role: 'zoomOut', accelerator: 'CmdOrCtrl+-' },
-        { label: '重置缩放', role: 'resetZoom', accelerator: 'CmdOrCtrl+0' },
-        { type: 'separator' },
-        { label: '全屏', role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: '帮助',
-      submenu: [
-        {
-          label: '关于 PromptVault',
-          click: () => {
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: '关于 PromptVault',
-              message: 'PromptVault 提示词图库管理台',
-              detail: `版本：1.0.0\nElectron：${process.versions.electron}\nChromium：${process.versions.chrome}\nNode：${process.versions.node}`
-            });
-          }
-        }
-      ]
-    }
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
+// 【已删除】buildMenu()
+//
+// 这里原来用 Menu.buildFromTemplate 建了一个「文件 / 编辑 / 视图 / 帮助」菜单，
+// 再 Menu.setApplicationMenu 挂上去。配合窗口的 autoHideMenuBar: true，
+// 菜单平时看不见，但用户**按一下 Alt 键它就会浮出来**——这不是用户想要的，
+// 他要的是完全没有菜单栏。
+//
+// 已核对过原模板的内容：重新加载 / 强制重新加载 / 开发者工具（仅开发态）、
+// 撤销重做剪切复制粘贴全选（role 默认项）、缩放 / 全屏（role 默认项）、
+// 关于 PromptVault。除了"关于"以外都是 Electron 默认能力，没有业务功能，
+// 所以整个模板直接删掉，改为 Menu.setApplicationMenu(null)。
+//
+// 其中真正会被用到的快捷键（缩放、开发者工具、重新加载）已经在
+// createWindow 里用 before-input-event 补回，功能没有丢失；
+// 只有"关于 PromptVault"对话框随菜单一起消失（版本号仍可在
+// desktop/package.json 和安装包信息里看到）。
+
 
 // 单实例：第二次启动时聚焦已有窗口
 const gotLock = app.requestSingleInstanceLock();
@@ -382,7 +376,16 @@ app.whenReady().then(() => {
     }
   });
 
-  buildMenu();
+  // 彻底移除应用菜单。
+  //
+  // 之前这里是 buildMenu()：它用 Menu.setApplicationMenu(Menu.buildFromTemplate(...))
+  // 挂了一套「文件/编辑/视图/帮助」菜单。窗口虽然设了 autoHideMenuBar: true，
+  // 但那个选项只是"默认隐藏"，用户按 Alt 键菜单栏照样会浮出来。
+  // 传入 null 才是真正的"没有菜单栏"——按 Alt 什么都不会出现。
+  //
+  // 注意：Windows 上如果完全不调用 setApplicationMenu，Electron 会自己塞一份
+  // 默认菜单（含开发者工具），所以这一句不能省，必须显式传 null。
+  Menu.setApplicationMenu(null);
   createWindow();
 
   app.on('activate', () => {
