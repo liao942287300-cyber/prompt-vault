@@ -81,6 +81,55 @@ function idOrNull(value) {
 }
 
 /**
+ * 批量 id 归一化：接受数组或逗号分隔字符串，去空、去重、保留首次出现顺序。
+ *
+ * 为什么要去重：调用方（ComfyUI 工作流）存的是 id 清单，用户可能把同一张图
+ * 放了两次。这里返回两份完全相同的元数据没有意义，还会让面板重复渲染卡片。
+ *
+ * @param {any} value
+ * @returns {string[]}
+ */
+function normalizeIds(value) {
+  const raw = Array.isArray(value) ? value : str(value).split(',');
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const id = str(item).trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/**
+ * 按 id 从集合里捞记录（单遍扫描 + 找齐即停）。
+ *
+ * 为什么不用「每条 id 都 find 一遍」：图库有 1.7 万条，ids 有几十个时
+ * O(n·m) 会明显变慢；这里一趟扫完、找齐就 break，代价是 O(n)。
+ *
+ * @param {Array} collection
+ * @param {string[]} ids
+ * @returns {{found: Map<string, object>, missing: string[]}}
+ */
+function pickByIds(collection, ids) {
+  const wanted = new Set(ids);
+  const found = new Map();
+  if (wanted.size > 0) {
+    for (const item of collection) {
+      if (!wanted.has(item.id)) continue;
+      found.set(item.id, item);
+      if (found.size >= wanted.size) break;
+    }
+  }
+  return {
+    found,
+    // missing 保持传入顺序，方便调用方逐条报告「哪张图没了」
+    missing: ids.filter((id) => !found.has(id))
+  };
+}
+
+/**
  * 布尔参数归一化（executeJavaScript 传过来的可能是 true / 1 / '1' / 'true'）。
  * @param {any} value
  * @returns {boolean}
@@ -129,6 +178,54 @@ function matchesKeyword(image, keyword) {
     strArray(image.tags).join(' ')
   ].join('\n').toLowerCase();
   return haystack.includes(keyword);
+}
+
+/**
+ * 资产图记录 → 对外元数据（**刻意不含 blob / thumb 的 base64**）。
+ *
+ * 为什么列表不返回 base64：
+ *   资产图原图动辄 1~3MB，一张转 base64 就膨胀 ~33%；一个项目几十张图，
+ *   列表接口一次就要序列化上百 MB 字符串 —— 主进程 executeJavaScript 的返回值
+ *   要跨进程结构化克隆，ComfyUI 那边还要再解析一遍 JSON，两边都会卡死。
+ *   所以列表只给元数据（每条约 150 字节），图片字节由 /api/asset-image 单张取。
+ *
+ * @param {object} asset
+ * @returns {{id:string, name:string, category:string, project:string, note:string,
+ *            width:number, height:number, size:number, mime:string, createdAt:number}}
+ */
+function toAssetMeta(asset) {
+  return {
+    id: str(asset.id),
+    name: str(asset.name),
+    category: str(asset.category),
+    project: str(asset.project),
+    // note 是给 ComfyUI 面板 hover 卡片显示备注用的；它同时是 q 的搜索字段
+    note: str(asset.note),
+    width: num(asset.width),
+    height: num(asset.height),
+    size: num(asset.size),
+    mime: str(asset.mime),
+    createdAt: num(asset.createdAt)
+  };
+}
+
+/**
+ * 资产图搜索匹配：只在 name / note 里做不区分大小写的包含匹配。
+ * 空格分隔表示「同时包含」（和 store.js 的 matchKeywords 语义一致）。
+ *
+ * 注意：不匹配 category / project —— 这两个维度已经有独立的查询参数，
+ * 混进关键词会让「按项目筛 + 搜名字」的结果变得难以预期。
+ *
+ * @param {object} asset
+ * @param {string} keyword 已小写、已 trim 的关键字
+ * @returns {boolean}
+ */
+function matchesAssetKeyword(asset, keyword) {
+  if (!keyword) return true;
+  const words = keyword.split(/\s+/).filter((word) => word.length > 0);
+  if (!words.length) return true;
+  const haystack = `${str(asset.name)}\n${str(asset.note)}`.toLowerCase();
+  return words.every((word) => haystack.includes(word));
 }
 
 /**
@@ -268,8 +365,9 @@ async function getCategories() {
  * includeChildren 语义见 buildCategoryMatcher：
  * 只有显式传 includeChildren=1 时，一级分类才会带上其二级子分类的图。
  *
- * @param {{type?:string, category?:string, includeChildren?:any, search?:string}} [options]
- * @returns {Promise<{ok:boolean, total:number, items:Array}>}
+ * @param {{type?:string, category?:string, includeChildren?:any, search?:string, ids?:any}} [options]
+ *        传了 ids 则走「按 id 批量取」分支，其余筛选参数全部忽略。
+ * @returns {Promise<{ok:boolean, total:number, items:Array, missing?:string[]}>}
  */
 async function getItems(options = {}) {
   await waitUntilReady();
@@ -277,6 +375,19 @@ async function getItems(options = {}) {
   const type = str(options.type).trim().toLowerCase() || 'images';
   if (type !== 'images' && type !== 'image') {
     return { ok: false, error: `不支持的 type：${type}（当前仅支持 images）` };
+  }
+
+  // 按 id 批量取（语义同 getAssets）：忽略分类 / 搜索，只按传入顺序返回。
+  const hasIds = options.ids !== undefined && options.ids !== null;
+  if (hasIds) {
+    const ids = normalizeIds(options.ids);
+    const { found, missing } = pickByIds(state.images, ids);
+    const picked = [];
+    for (const id of ids) {
+      const image = found.get(id);
+      if (image) picked.push(toItemMeta(image));
+    }
+    return { ok: true, total: picked.length, items: picked, missing };
   }
 
   const categoryId = str(options.category).trim();
@@ -391,13 +502,139 @@ async function getText(options = {}) {
   };
 }
 
+/**
+ * 资产图元数据列表（分页）。**不返回任何图片字节**（原因见 toAssetMeta）。
+ *
+ * 分页刻意放在渲染层做：数据本来就在内存里，切片是 O(1)，
+ * 一次只把「这一页」跨进程传出去；如果放到主进程切片，
+ * 每翻一页都要把整个库的元数据克隆一遍，上万张图时明显变慢。
+ *
+ * 排序：createdAt 倒序（最新的在前），和资产图页一致；
+ * 同毫秒用 id 兜底，保证 offset 分页不会因为排序不稳定而漏图 / 重复图。
+ *
+ * @param {{category?:string, project?:string, limit?:any, offset?:any, q?:string, ids?:any}} [options]
+ *        project 传 '__none__' 表示只看未分项目的图；
+ *        limit <= 0 表示不限；
+ *        传了 ids 则走「按 id 批量取」分支，其余筛选/分页参数全部忽略。
+ * @returns {Promise<{ok:boolean, total:number, items:Array, offset?:number,
+ *                    limit?:number, missing?:string[]}>}
+ */
+async function getAssets(options = {}) {
+  await waitUntilReady();
+
+  // 按 id 批量取：工作流里存的是 id 清单，重开工作流时按 id 取回元数据。
+  // 这条路径必须忽略 category/project/q/limit/offset —— 否则「按 id 取」
+  // 会被残留的筛选条件悄悄过滤掉一部分，面板上就会出现「图明明存在却没了」。
+  const hasIds = options.ids !== undefined && options.ids !== null;
+  if (hasIds) {
+    const ids = normalizeIds(options.ids);
+    const { found, missing } = pickByIds(state.assets, ids);
+    const items = [];
+    for (const id of ids) {
+      const asset = found.get(id);
+      if (asset) items.push(toAssetMeta(asset));
+    }
+    return { ok: true, total: items.length, items, missing };
+  }
+
+  const category = str(options.category).trim();
+  const project = str(options.project).trim();
+  const keyword = str(options.q).trim().toLowerCase();
+
+  const rawLimit = Number(options.limit);
+  const rawOffset = Number(options.offset);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 0;
+  const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+
+  const matched = [];
+  for (const asset of state.assets) {
+    if (category && str(asset.category) !== category) continue;
+
+    if (project) {
+      const projectName = str(asset.project);
+      if (project === '__none__') {
+        // 特殊值：project 为空字符串 = 未分项目
+        if (projectName) continue;
+      } else if (projectName !== project) {
+        continue;
+      }
+    }
+
+    if (!matchesAssetKeyword(asset, keyword)) continue;
+    matched.push(asset);
+  }
+
+  matched.sort((a, b) => {
+    const diff = num(b.createdAt) - num(a.createdAt);
+    if (diff !== 0) return diff;
+    return str(a.id).localeCompare(str(b.id));
+  });
+
+  const total = matched.length;
+  const start = Math.min(offset, total);
+  const end = limit > 0 ? Math.min(start + limit, total) : total;
+
+  return {
+    ok: true,
+    total,
+    items: matched.slice(start, end).map(toAssetMeta),
+    offset: start,
+    limit
+  };
+}
+
+/**
+ * 取资产图二进制（base64）。默认缩略图（约 35KB JPEG），size=full 取原图。
+ *
+ * 和 getImageBase64 的唯一差别是**默认值**：这里默认 thumb ——
+ * 资产图原图常有 1~3MB，节点侧做预览 / 选图时几乎总是要缩略图；
+ * 指定尺寸缺失时同样退回另一个尺寸（老记录可能只存了其中一种）。
+ *
+ * @param {{id?:string, size?:string}} [options]
+ * @returns {Promise<{ok:boolean, mime?:string, base64?:string, bytes?:number, error?:string}>}
+ */
+async function getAssetImageBase64(options = {}) {
+  await waitUntilReady();
+
+  const id = str(options.id).trim();
+  if (!id) return { ok: false, error: '缺少 id 参数' };
+
+  const asset = state.assets.find((item) => item.id === id);
+  if (!asset) return { ok: false, error: `资产图不存在：${id}` };
+
+  const wantFull = str(options.size).trim().toLowerCase() === 'full';
+  // 兜底：老记录可能只有 blob 没有 thumb（导入时缩略图生成失败），反之亦然
+  const blob = wantFull
+    ? (asset.blob || asset.thumb)
+    : (asset.thumb || asset.blob);
+
+  if (!blob || typeof blob.arrayBuffer !== 'function') {
+    return { ok: false, error: '该记录没有图片数据' };
+  }
+
+  try {
+    const base64 = await blobToBase64(blob);
+    if (!base64) return { ok: false, error: '图片数据为空' };
+    return {
+      ok: true,
+      mime: str(blob.type) || str(asset.mime) || 'image/png',
+      base64,
+      bytes: num(blob.size) || num(asset.size)
+    };
+  } catch (err) {
+    return { ok: false, error: `读取图片失败：${str(err && err.message) || '未知错误'}` };
+  }
+}
+
 /** 挂到 window 上供主进程 executeJavaScript 调用 */
 const PV_API = {
   getHealth,
   getCategories,
   getItems,
   getImageBase64,
-  getText
+  getText,
+  getAssets,
+  getAssetImageBase64
 };
 
 if (typeof window !== 'undefined') {

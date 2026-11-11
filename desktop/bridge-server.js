@@ -48,7 +48,9 @@ const RENDERER_METHODS = new Set([
   'getCategories',
   'getItems',
   'getImageBase64',
-  'getText'
+  'getText',
+  'getAssets',
+  'getAssetImageBase64'
 ]);
 
 /* ------------------------------------------------------------ 模块级状态 */
@@ -91,6 +93,39 @@ function toCount(value) {
 /** 字符串归一化 */
 function toText(value) {
   return value === null || value === undefined ? '' : String(value);
+}
+
+/**
+ * 非负整数归一化（用于 total / width 等「0 有意义」的字段）。
+ * 与 toCount 的区别：非法值返回 fallback，而不是一律 0。
+ * @param {any} value
+ * @param {number} fallback
+ * @returns {number}
+ */
+function toNonNegativeInt(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
+}
+
+/**
+ * 解析 `?ids=a,b,c` 形式的批量 id 参数。
+ *
+ * 返回 null 表示「请求里根本没有 ids 参数」—— 这个区分很关键：
+ * 没有 ids 走分页查询，有 ids（哪怕是空串）走按 id 批量取。
+ * 空串时返回 []，于是调用方拿到 {total:0, items:[], missing:[]}，
+ * 比「悄悄退回全量查询」更可预期。
+ *
+ * @param {URL} url
+ * @returns {string[]|null}
+ */
+function parseIdList(url) {
+  if (!url.searchParams.has('ids')) return null;
+  const raw = toText(url.searchParams.get('ids'));
+  return raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 /**
@@ -282,9 +317,12 @@ function describeEndpoints() {
       'GET /api/health',
       'GET /api/ping',
       'GET /api/categories',
-      'GET /api/items?type=images&category=<id>&includeChildren=1&search=<kw>',
+      'GET /api/items?type=images&category=<id>&includeChildren=1&search=<kw>&ids=<id,id>',
       'GET /api/image?id=<id>&size=full|thumb',
-      'GET /api/text?type=loras|edits|system-prompts'
+      'GET /api/text?type=loras|edits|system-prompts',
+      'GET /api/assets?category=<name>&project=<name|__none__>&q=<kw>&limit=<n>&offset=<n>',
+      'GET /api/assets?ids=<id,id>',
+      'GET /api/asset-image?id=<id>&size=thumb|full'
     ]
   };
 }
@@ -334,12 +372,15 @@ async function handleItems(ctx, url, res) {
   const search = url.searchParams.get('search') || '';
   const rawChildren = (url.searchParams.get('includeChildren') || '').toLowerCase();
   const includeChildren = rawChildren === '1' || rawChildren === 'true' || rawChildren === 'yes';
+  // null = 没传 ids（走原来的筛选路径）；数组 = 按 id 批量取
+  const ids = parseIdList(url);
 
   const data = await callRenderer(ctx.getWindow, 'getItems', {
     type: 'images',
     category,
     includeChildren,
-    search
+    search,
+    ids
   });
 
   if (data && data.ok === false) {
@@ -348,7 +389,52 @@ async function handleItems(ctx, url, res) {
   }
 
   const items = Array.isArray(data && data.items) ? data.items : [];
+
+  if (ids) {
+    const missing = Array.isArray(data && data.missing) ? data.missing.map(toText) : [];
+    sendJson(res, 200, { ok: true, total: items.length, items, missing });
+    return;
+  }
+
   sendJson(res, 200, { ok: true, total: items.length, items });
+}
+
+/**
+ * 把渲染层返回的 {ok, mime, base64} 解码成二进制写回响应。
+ * /api/image 与 /api/asset-image 共用，避免两份几乎相同的解码逻辑漂移。
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {any} data 渲染层返回值
+ * @param {string} id 请求的记录 id（仅用于错误文案）
+ * @param {string} label 错误文案里的实体名，如 '图片' / '资产图'
+ * @returns {boolean} 是否已写出响应
+ */
+function sendBase64Image(res, data, id, label) {
+  const base64 = data && typeof data.base64 === 'string' ? data.base64 : '';
+
+  if (!data || data.ok !== true || !base64) {
+    sendJson(res, 404, {
+      ok: false,
+      error: toText(data && data.error) || `${label}不存在：${id}`
+    });
+    return true;
+  }
+
+  let buffer;
+  try {
+    buffer = Buffer.from(base64, 'base64');
+  } catch (err) {
+    sendJson(res, 500, { ok: false, error: `${label}解码失败：${errorMessage(err)}` });
+    return true;
+  }
+
+  if (!buffer.length) {
+    sendJson(res, 404, { ok: false, error: `${label}数据为空：${id}` });
+    return true;
+  }
+
+  sendBinary(res, 200, buffer, resolveImageMime(data.mime, buffer));
+  return true;
 }
 
 /** 处理 /api/image */
@@ -363,30 +449,89 @@ async function handleImage(ctx, url, res) {
   const size = sizeParam === 'thumb' ? 'thumb' : 'full';
 
   const data = await callRenderer(ctx.getWindow, 'getImageBase64', { id, size });
-  const base64 = data && typeof data.base64 === 'string' ? data.base64 : '';
+  sendBase64Image(res, data, id, '图片');
+}
 
-  if (!data || data.ok !== true || !base64) {
-    sendJson(res, 404, {
-      ok: false,
-      error: toText(data && data.error) || `图片不存在：${id}`
-    });
+/**
+ * 处理 /api/assets —— 资产图元数据列表（分页）。
+ *
+ * 刻意不返回 blob / thumb 的 base64：
+ *   资产图原图常有 1~3MB，base64 再膨胀 ~33%。ComfyUI 侧要的是「精简列表」
+ *   做分页缓存，一次几百条元数据也就几十 KB；把图片塞进来会让单次响应到
+ *   上百 MB，跨进程克隆 + JSON 解析两边都会卡死。图片走 /api/asset-image 单张取。
+ *
+ * 分页在渲染层完成（数据在内存里，切片 O(1)），这里**不能再切一次**，
+ * 否则 offset 会被应用两遍。
+ */
+async function handleAssets(ctx, url, res) {
+  const category = toText(url.searchParams.get('category')).trim();
+  const project = toText(url.searchParams.get('project')).trim();
+  const q = toText(url.searchParams.get('q')).trim();
+  // limit=0（或非法）= 不限
+  const limit = toCount(url.searchParams.get('limit'));
+  const offset = toCount(url.searchParams.get('offset'));
+  // null = 没传 ids（走分页查询）；数组 = 按 id 批量取，其余筛选/分页参数由渲染层忽略
+  const ids = parseIdList(url);
+
+  const data = await callRenderer(ctx.getWindow, 'getAssets', {
+    category,
+    project,
+    q,
+    limit,
+    offset,
+    ids
+  });
+
+  if (data && data.ok === false) {
+    sendJson(res, 400, { ok: false, error: toText(data.error) || '查询失败' });
     return;
   }
 
-  let buffer;
-  try {
-    buffer = Buffer.from(base64, 'base64');
-  } catch (err) {
-    sendJson(res, 500, { ok: false, error: `图片解码失败：${errorMessage(err)}` });
+  const rawItems = Array.isArray(data && data.items) ? data.items : [];
+  const items = rawItems.map((item) => ({
+    id: toText(item && item.id),
+    name: toText(item && item.name),
+    category: toText(item && item.category),
+    project: toText(item && item.project),
+    note: toText(item && item.note),
+    width: toNonNegativeInt(item && item.width, 0),
+    height: toNonNegativeInt(item && item.height, 0),
+    size: toNonNegativeInt(item && item.size, 0),
+    mime: toText(item && item.mime),
+    createdAt: toNonNegativeInt(item && item.createdAt, 0)
+  }));
+
+  // total 是「筛选后、分页前」的总数，调用方据此决定还要不要翻页
+  const total = toNonNegativeInt(data && data.total, items.length);
+
+  if (ids) {
+    // 按 id 取时额外告诉调用方「哪些 id 在 PromptVault 里已经不存在了」，
+    // 面板据此把卡片标灰而不是直接消失（工作流里还留着这些 id）
+    const missing = Array.isArray(data && data.missing) ? data.missing.map(toText) : [];
+    sendJson(res, 200, { ok: true, total, items, missing });
     return;
   }
 
-  if (!buffer.length) {
-    sendJson(res, 404, { ok: false, error: `图片数据为空：${id}` });
+  sendJson(res, 200, { ok: true, total, items });
+}
+
+/**
+ * 处理 /api/asset-image —— 返回资产图原始字节。
+ *
+ * 与 /api/image 的差别：size 默认 thumb（资产图原图太大，节点侧预览基本只要缩略图）。
+ */
+async function handleAssetImage(ctx, url, res) {
+  const id = toText(url.searchParams.get('id')).trim();
+  if (!id) {
+    sendJson(res, 400, { ok: false, error: '缺少 id 参数' });
     return;
   }
 
-  sendBinary(res, 200, buffer, resolveImageMime(data.mime, buffer));
+  const sizeParam = (url.searchParams.get('size') || 'thumb').toLowerCase();
+  const size = sizeParam === 'full' ? 'full' : 'thumb';
+
+  const data = await callRenderer(ctx.getWindow, 'getAssetImageBase64', { id, size });
+  sendBase64Image(res, data, id, '资产图');
 }
 
 /** 处理 /api/text */
@@ -487,6 +632,12 @@ function createRequestHandler(ctx) {
         return;
       case '/api/text':
         await handleText(ctx, url, res);
+        return;
+      case '/api/assets':
+        await handleAssets(ctx, url, res);
+        return;
+      case '/api/asset-image':
+        await handleAssetImage(ctx, url, res);
         return;
       default:
         sendJson(res, 404, { ok: false, error: `未知接口：${pathname}` });
