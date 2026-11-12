@@ -258,6 +258,10 @@ export function mountDetail(ctx) {
     form.appendChild(buildTextarea('负向提示词', 'negative', image.negative, '不希望出现的内容…'));
     form.appendChild(buildTextarea('参数', 'params', image.params, 'Steps: 30, CFG: 7, Sampler: DPM++ 2M'));
 
+    // 来源（Civitai 链接导入的记录才有）
+    const sourceField = buildSourceField(image);
+    if (sourceField) form.appendChild(sourceField);
+
     // 备注
     const noteField = el('div', { class: 'field' });
     noteField.appendChild(el('label', { class: 'field-label', text: '备注' }));
@@ -389,6 +393,43 @@ export function mountDetail(ctx) {
     }
     wrap.appendChild(select);
     return wrap;
+  }
+
+  /**
+   * 来源信息：Civitai 链接导入的记录才带 image.source。
+   * 只读展示，点「打开原页」交给系统浏览器（主进程里 openExternal 已接好）。
+   */
+  function buildSourceField(image) {
+    const src = image && image.source;
+    if (!src || src.type !== 'civitai') return null;
+
+    const field = el('div', { class: 'field' });
+    field.appendChild(el('label', { class: 'field-label', text: '来源' }));
+
+    const box = el('div', { class: 'detail-source' });
+    const line = el('div', { class: 'detail-source-main' });
+    line.appendChild(el('span', { class: 'detail-source-badge', text: 'Civitai' }));
+    if (src.id) line.appendChild(el('span', { class: 'detail-source-id', text: `#${src.id}` }));
+
+    const bits = [];
+    if (src.username) bits.push(`作者 ${src.username}`);
+    if (src.baseModel) bits.push(`基础模型 ${src.baseModel}`);
+    if (src.width && src.height) bits.push(`${src.width}×${src.height}`);
+    if (bits.length) line.appendChild(el('span', { class: 'detail-source-meta', text: bits.join(' · ') }));
+    box.appendChild(line);
+
+    if (src.pageUrl) {
+      box.appendChild(el('a', {
+        class: 'detail-source-link',
+        href: src.pageUrl,
+        target: '_blank',
+        rel: 'noreferrer noopener',
+        html: `${icon('link', 13)}<span>打开原页</span>`
+      }));
+    }
+
+    field.appendChild(box);
+    return field;
   }
 
   function buildTextarea(label, field, value, placeholder) {

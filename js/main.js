@@ -29,6 +29,8 @@ const ctx = {
   openImport() { if (transfer) transfer.openImport(); },
   /** 打开快速导入弹窗 */
   openQuickImport() { if (transfer) transfer.openQuickImport(); },
+  /** 从 Civitai 链接导入 */
+  openCivitaiImport() { if (transfer) transfer.openCivitaiImport(); },
   /** 打开导出弹窗 */
   openExport() { if (transfer) transfer.openExport(); }
 };
@@ -55,6 +57,12 @@ function decorateTopbar() {
   if (quickImportBtn) {
     quickImportBtn.innerHTML = `${icon('plus', 15)}<span>快速导入</span>`;
     quickImportBtn.title = '粘贴一张图片并填写提示词，快速入库';
+  }
+
+  const civitaiBtn = $('#btn-civitai-import');
+  if (civitaiBtn) {
+    civitaiBtn.innerHTML = `${icon('link', 15)}<span>Civitai</span>`;
+    civitaiBtn.title = '粘贴 Civitai 图片链接批量导入，连同生成参数一起入库';
   }
 
   const exportBtn = $('#btn-export');
@@ -271,6 +279,8 @@ async function boot() {
 
   $('#btn-import').addEventListener('click', () => ctx.openImport());
   $('#btn-quick-import').addEventListener('click', () => ctx.openQuickImport());
+  const civitaiImportBtn = $('#btn-civitai-import');
+  if (civitaiImportBtn) civitaiImportBtn.addEventListener('click', () => ctx.openCivitaiImport());
   $('#btn-export').addEventListener('click', () => ctx.openExport());
   $('#btn-theme').addEventListener('click', () => store.toggleTheme());
 

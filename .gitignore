@@ -20,7 +20,7 @@ build/
 # 桌面版构建产物（renderer 由 scripts/sync-renderer.mjs 从上级目录生成，不入库）
 desktop/renderer/
 desktop/dist/
-desktop/dist-release/
+desktop/dist-release*/
 desktop/.verify-data/
 
 # 本地测试与临时文件

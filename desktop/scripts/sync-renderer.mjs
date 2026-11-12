@@ -19,6 +19,7 @@ const copyList = [
   'js/png-meta.js',
   'js/docx-import.js',
   'js/auto-classify.js',
+  'js/civitai.js',
   'js/views/sidebar.js',
   'js/views/gallery.js',
   'js/views/detail.js',

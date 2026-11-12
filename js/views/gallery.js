@@ -332,6 +332,15 @@ export function mountGallery(ctx) {
     }
     card.appendChild(thumbWrap);
 
+    // 来源角标：Civitai 链接导入的图在缩略图左上角打一个标记，扫图时一眼认出来
+    if (image.source && image.source.type === 'civitai') {
+      thumbWrap.appendChild(el('span', {
+        class: 'card-source-badge',
+        text: 'C',
+        title: image.source.id ? `来自 Civitai #${image.source.id}` : '来自 Civitai'
+      }));
+    }
+
     // 卡片右下角常驻小按钮
     const actions = el('div', { class: 'card-actions' });
     const favBtn = el('button', {

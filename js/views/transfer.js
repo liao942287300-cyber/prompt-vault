@@ -14,6 +14,10 @@ import {
 import { readPngPromptMeta, isPngFile } from '../png-meta.js';
 import { parseDocxStructure, loadDocxImage } from '../docx-import.js';
 import { classifyPrompt } from '../auto-classify.js';
+import {
+  parseCivitaiRefs, fetchCivitaiEntry, normalizeCivitaiEntry,
+  buildParamsString, fetchCivitaiBlob, extFromUrl
+} from '../civitai.js';
 
 /** CSV 列顺序 */
 const CSV_HEADER = ['name', 'category', 'subCategory', 'positive', 'negative', 'params', 'tags', 'favorite'];
@@ -359,7 +363,10 @@ export function mountTransfer(ctx) {
       note: '',
       hash: hash || '',
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      // 来源信息（目前只有 Civitai 链接导入会写）。没有就整个字段不出现，
+      // 避免给几万张本地图各加一个 null 字段把备份文件撑大。
+      ...(meta.source ? { source: meta.source } : {})
     };
   }
 
@@ -2196,10 +2203,313 @@ export function mountTransfer(ctx) {
     toast(`导入完成：${parts.join('，')}${autoStatsSuffix(result)}`, 'success');
   }
 
+  /* ==================================================================
+   *  九、从 Civitai 链接导入
+   *
+   *  粘贴一批图片页链接 → 逐条拉公开接口取生成参数 → 下载原图 → 入库。
+   *  接口与图床都带 CORS 头，渲染层直接 fetch，不需要主进程代理。
+   * ================================================================== */
+
+  let civitaiModal = null;
+
+  function openCivitaiImport() {
+    if (civitaiModal) civitaiModal.close(null);
+
+    const target = {
+      categoryId: store.state.filter.categoryId || null,
+      subCategoryId: store.state.filter.subCategoryId || null,
+      catTouched: false
+    };
+
+    /** 本次导入的运行时状态 */
+    const job = {
+      running: false,
+      refs: [],
+      rows: [],
+      added: 0,
+      skipped: 0,
+      failed: 0
+    };
+
+    const wrap = el('div', { class: 'section civitai-wrap' });
+
+    /* --- 说明 --- */
+    const intro = el('div', { class: 'section-desc' });
+    intro.innerHTML =
+      '支持 <code>civitai.com/images/数字</code> 图片页链接、<code>image.civitai.com</code> 图床直链，' +
+      '也可以直接贴数字 ID。一行一条，能一次贴一批。' +
+      '<br>导入时会自动抓取这张图的<b>正向 / 负向 / 参数</b>（Steps、Sampler、CFG、Seed、尺寸、基础模型），' +
+      '并在详情里标注来源。';
+    wrap.appendChild(intro);
+
+    /* --- 粘贴框 --- */
+    const input = el('textarea', {
+      class: 'textarea civitai-input',
+      spellcheck: 'false',
+      placeholder: 'https://civitai.com/images/148754255\nhttps://civitai.com/images/148754241\n148754188'
+    });
+    wrap.appendChild(input);
+
+    /* --- 汇总行 --- */
+    const stats = el('div', { class: 'civitai-stats', text: '粘贴后自动识别' });
+    wrap.appendChild(stats);
+
+    /* --- 解析结果列表 --- */
+    const list = el('div', { class: 'civitai-list' });
+    wrap.appendChild(list);
+
+    /* --- 分类 + 自动分类说明 --- */
+    const catSection = el('div', { class: 'section' });
+    catSection.appendChild(el('div', { class: 'section-title', text: '归入分类' }));
+    catSection.appendChild(el('div', {
+      class: 'section-desc',
+      text: '设置里开着自动分类时，会先按提示词内容推断，推断不出来才落到这里选的分类（默认跟随左栏当前筛选）。'
+    }));
+    const catRow = el('div', { class: 'detail-row' });
+    const catSelect = el('select', { class: 'select' });
+    catSelect.appendChild(el('option', { value: '', text: '未分类（一级）' }));
+    store.topCategories().forEach((c) => catSelect.appendChild(el('option', { value: c.id, text: c.name })));
+    catSelect.value = target.categoryId || '';
+    const subSelect = el('select', { class: 'select' });
+    const fillSubs = (parentId) => {
+      subSelect.innerHTML = '';
+      subSelect.appendChild(el('option', { value: '', text: '未指定（二级）' }));
+      store.subCategoriesOf(parentId).forEach((c) => subSelect.appendChild(el('option', { value: c.id, text: c.name })));
+    };
+    fillSubs(target.categoryId);
+    subSelect.value = target.subCategoryId || '';
+    catSelect.addEventListener('change', () => {
+      fillSubs(catSelect.value);
+      subSelect.value = '';
+      target.categoryId = catSelect.value || null;
+      target.subCategoryId = null;
+      target.catTouched = true;
+    });
+    subSelect.addEventListener('change', () => {
+      target.subCategoryId = subSelect.value || null;
+      target.catTouched = true;
+    });
+    catRow.appendChild(catSelect);
+    catRow.appendChild(subSelect);
+    catSection.appendChild(catRow);
+    wrap.appendChild(catSection);
+
+    /* --- 底部按钮 --- */
+    const footer = el('div', { class: 'modal-foot', style: { width: '100%' } });
+    const cancelBtn = el('button', { class: 'btn', type: 'button', text: '关闭' });
+    const runBtn = el('button', { class: 'btn btn-primary', type: 'button', text: '开始导入' });
+    runBtn.disabled = true;
+    footer.appendChild(el('span', { class: 'spacer' }));
+    footer.appendChild(cancelBtn);
+    footer.appendChild(runBtn);
+
+    const modal = openModal({
+      title: '从 Civitai 链接导入',
+      wide: true,
+      content: wrap,
+      footer,
+      onClose: () => {
+        if (civitaiModal === modal) civitaiModal = null;
+      }
+    });
+    civitaiModal = modal;
+    cancelBtn.addEventListener('click', () => modal.close(null));
+
+    /* ---------------------------- 解析 ---------------------------- */
+
+    function rowOf(ref) {
+      const key = ref.kind === 'image' ? `i:${ref.id}` : `f:${ref.url}`;
+      return job.rows.find((r) => r.key === key) || null;
+    }
+
+    function makeRow(ref) {
+      const key = ref.kind === 'image' ? `i:${ref.id}` : `f:${ref.url}`;
+      const row = el('div', { class: 'civitai-row' });
+      const tag = el('span', {
+        class: `civitai-tag${ref.kind === 'file' ? ' civitai-tag-file' : ''}`,
+        text: ref.kind === 'image' ? `#${ref.id}` : '直链'
+      });
+      const title = el('span', { class: 'civitai-row-title', text: '等待导入' });
+      const state = el('span', { class: 'civitai-row-state', text: '待处理' });
+      row.appendChild(tag);
+      row.appendChild(title);
+      row.appendChild(state);
+      list.appendChild(row);
+      const item = { key, ref, row, title, state };
+      job.rows.push(item);
+      return item;
+    }
+
+    function setState(item, kind, text) {
+      item.state.textContent = text;
+      item.state.className = `civitai-row-state civitai-state-${kind}`;
+      item.row.dataset.state = kind;
+    }
+
+    function refreshStats(extra) {
+      const n = job.refs.length;
+      const bad = job.badCount || 0;
+      if (!n && !bad) {
+        stats.textContent = '粘贴后自动识别';
+        return;
+      }
+      const bits = [`识别 ${n} 条`];
+      if (bad) bits.push(`无法识别 ${bad} 条`);
+      if (extra) bits.push(extra);
+      stats.textContent = bits.join(' · ');
+    }
+
+    function reparse() {
+      if (job.running) return;
+      const parsed = parseCivitaiRefs(input.value);
+      job.refs = parsed.refs;
+      job.badCount = parsed.bad.length;
+      job.rows = [];
+      // 重新解析等于换了一批目标，上一轮的统计清零，否则「新增 3 张」会一直挂着
+      job.added = 0;
+      job.skipped = 0;
+      job.failed = 0;
+      list.innerHTML = '';
+      parsed.refs.forEach(makeRow);
+      if (!parsed.refs.length) {
+        list.appendChild(el('div', {
+          class: 'civitai-empty',
+          text: input.value.trim() ? '没识别到 Civitai 图片链接，检查一下链接域名' : '把 Civitai 图片链接贴到上面'
+        }));
+      }
+      runBtn.disabled = !parsed.refs.length;
+      runBtn.textContent = '开始导入';
+      refreshStats();
+    }
+
+    const debouncedParse = debounce(reparse, 160);
+    input.addEventListener('input', debouncedParse);
+    input.addEventListener('paste', () => setTimeout(reparse, 0));
+
+    /* ---------------------------- 导入 ---------------------------- */
+
+    async function runImport() {
+      if (job.running || !job.refs.length) return;
+      job.running = true;
+      runBtn.disabled = true;
+      runBtn.textContent = '正在导入…';
+      cancelBtn.textContent = '后台继续';
+
+      const hashIndex = new Map();
+      store.state.images.forEach((img) => { if (img.hash) hashIndex.set(img.hash, img); });
+
+      let batch = [];
+      const flush = async () => {
+        if (!batch.length) return;
+        const chunk = batch;
+        batch = [];
+        await store.bulkAddImagesSilent(chunk);
+      };
+
+      for (let i = 0; i < job.refs.length; i += 1) {
+        const ref = job.refs[i];
+        const item = rowOf(ref);
+        const label = `第 ${i + 1} / ${job.refs.length} 条`;
+
+        try {
+          let info = { id: ref.id || '', prompt: '', negative: '', imageUrl: ref.url || '' };
+          if (ref.kind === 'image') {
+            setState(item, 'loading', '取元数据');
+            refreshStats(`正在处理${label}`);
+            const entry = await fetchCivitaiEntry(ref.id);
+            info = normalizeCivitaiEntry(entry);
+            item.title.textContent = info.hasMeta
+              ? (info.prompt ? info.prompt.slice(0, 60) + (info.prompt.length > 60 ? '…' : '') : '已取到参数')
+              : '这张图没有公开的生成参数';
+          } else {
+            item.title.textContent = '图床直链（无生成参数）';
+          }
+
+          setState(item, 'loading', '下载图片');
+          refreshStats(`正在处理${label}`);
+          const blob = await fetchCivitaiBlob(info.imageUrl || ref.url);
+          const ext = extFromUrl(info.imageUrl || ref.url);
+          const mime = blob.type && blob.type !== 'application/octet-stream'
+            ? blob.type
+            : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+          const fileName = info.id ? `civitai-${info.id}.${ext}` : `civitai-${Date.now()}.${ext}`;
+          const file = new File([blob], fileName, { type: mime });
+
+          const hash = await sha256Hex(file);
+          if (hash && hashIndex.has(hash)) {
+            job.skipped += 1;
+            setState(item, 'skip', '已在库中');
+            item.row.title = '内容与库里某张图完全一致，已跳过';
+            refreshStats(`新增 ${job.added} · 跳过 ${job.skipped} · 失败 ${job.failed}`);
+            continue;
+          }
+
+          setState(item, 'loading', '入库中');
+          const resolved = resolveCategory(target, {}, info.prompt);
+          const record = await buildRecord(file, {
+            name: info.id ? `Civitai-${info.id}` : baseNameNoExt(fileName),
+            positive: info.prompt,
+            negative: info.negative,
+            params: buildParamsString(info),
+            tags: [],
+            categoryId: resolved.categoryId,
+            subCategoryId: resolved.subCategoryId,
+            source: {
+              type: 'civitai',
+              id: info.id || '',
+              pageUrl: info.pageUrl || ref.url || '',
+              username: info.username || '',
+              baseModel: info.baseModel || '',
+              width: info.width || 0,
+              height: info.height || 0
+            }
+          }, hash);
+
+          batch.push(record);
+          hashIndex.set(hash, record);
+          job.added += 1;
+          if (!info.hasMeta && ref.kind === 'image') {
+            setState(item, 'warn', '已导入（无参数）');
+          } else {
+            setState(item, 'done', '已导入');
+          }
+          if (batch.length >= 3) await flush();
+          refreshStats(`新增 ${job.added} · 跳过 ${job.skipped} · 失败 ${job.failed}`);
+        } catch (err) {
+          job.failed += 1;
+          setState(item, 'fail', '失败');
+          item.title.textContent = String((err && err.message) || err || '未知错误');
+          refreshStats(`新增 ${job.added} · 跳过 ${job.skipped} · 失败 ${job.failed}`);
+        }
+
+        // 串行 + 间隔：Civitai 对无 key 的请求有速率限制，连续猛拉会被 429
+        if (i < job.refs.length - 1) await new Promise((r) => setTimeout(r, 220));
+      }
+
+      await flush();
+      store.refreshAfterBulkImport();
+      job.running = false;
+      runBtn.disabled = false;
+      runBtn.textContent = '继续导入';
+      cancelBtn.textContent = '关闭';
+
+      const parts = [`新增 ${job.added} 张`];
+      if (job.skipped) parts.push(`跳过重复 ${job.skipped} 张`);
+      if (job.failed) parts.push(`失败 ${job.failed} 张`);
+      refreshStats(parts.join(' · '));
+      toast(`Civitai 导入完成：${parts.join('，')}`, job.failed ? 'warn' : 'success');
+      store.clearSelection();
+    }
+
+    runBtn.addEventListener('click', runImport);
+    reparse();
+  }
+
   return {
     openImport,
     openExport,
     openQuickImport,
+    openCivitaiImport,
     handleDroppedDataTransfer,
     handleDroppedFiles
   };

@@ -74,6 +74,7 @@ PromptVault 解决的就一件事：**把「图」和「提示词」绑在一起
 - **Word 文档**（`.docx`）—— 自动识别「图片 + 紧随其后的提示词」，支持多文档批量导入
 - **普通图片** —— 拖拽、多选、整个文件夹递归
 - **快速导入** —— 粘贴剪贴板里的图，填提示词，一步入库
+- **Civitai 链接** —— 贴图片页链接批量导入，连同生成参数和来源一起入库
 - **PNG 内嵌提示词** —— 自动读取 AI 工具写进 PNG 的生成参数
 - **配对文件** —— 同名 `.txt` / `.json` 自动关联
 
@@ -189,6 +190,38 @@ npx --yes serve -l 8899 .
 
 很多 AI 出图工具会把生成参数写进 PNG 的 `tEXt` / `zTXt` / `iTXt` 文本块。
 本工具会流式读取这些块，自动提取正向 / 负向提示词和采样参数，**导入即带词**。
+
+### 5. Civitai 链接导入
+
+点顶栏「Civitai」，把图片页链接贴进去，一行一条，可以一次贴一批：
+
+```
+https://civitai.com/images/148754255
+https://civitai.com/images/148754241
+148754188
+```
+
+认这几种写法：
+
+| 写法 | 说明 |
+| --- | --- |
+| `civitai.com/images/数字` | 图片页链接，参数最全 |
+| `civitai.com/api/v1/images?imageId=数字` | 接口链接，一样能用 |
+| `image.civitai.com/...` | 图床直链，只能拿到图，没有生成参数 |
+| 纯数字 | 直接当图片 ID |
+
+导入时会调公开接口 `api/v1/images?imageId=...&withMeta=true`，把这张图的：
+
+- **正向 / 负向提示词** 原样填进对应输入框
+- **参数** 拼成和 PNG 解析一致的单行格式：`Steps: 18, Sampler: DPM++ 2M Karras, CFG scale: 2, Seed: 671035176, Size: 832x1216, Model: Illustrious`
+- **来源** 写进记录：Civitai 编号、作者、基础模型、原始尺寸，详情里能点「打开原页」
+
+顺手做的事：图片按库里统一规则压缩存缩略图、按 SHA-256 去重（同一张图重复导入会跳过）、按提示词走自动分类。
+
+两个前提：
+
+- **Civitai 在国内需要代理**，直连会超时。桌面版走系统代理，网页版走浏览器代理，代理没开就会全部标「失败」并提示网络不通。
+- 没有公开生成参数的老图（不是站内生成的那批）只会有图片和来源，参数是空的，列表里会标「已导入（无参数）」。
 
 ---
 
@@ -323,7 +356,7 @@ IndexedDB 数据库名 `promptvault`，版本 `3`，7 个对象仓库：
 | 仓库 | 结构 |
 | --- | --- |
 | `categories` | `{ id, name, level(1\|2), parentId, order, color, createdAt }` |
-| `images` | `{ id, name, blob, thumb, mime, width, height, size, positive, negative, params, categoryId, subCategoryId, tags[], favorite, note, hash, createdAt, updatedAt }` |
+| `images` | `{ id, name, blob, thumb, mime, width, height, size, positive, negative, params, categoryId, subCategoryId, tags[], favorite, note, hash, createdAt, updatedAt, source? }` |
 | `meta` | `{ key, value }` —— 设置、LORA 目录句柄等 |
 | `loras` | `{ id, name, fileName, path, keywords, note, createdAt }` |
 | `edits` | `{ id, title, content, before, after, tags[], note, createdAt }` |
@@ -331,6 +364,10 @@ IndexedDB 数据库名 `promptvault`，版本 `3`，7 个对象仓库：
 | `prompts` | `{ id, title, content, tags[], note, createdAt, updatedAt }` |
 
 `images` 上建立了 `categoryId`、`subCategoryId`、`favorite`、`createdAt`、`hash` 五个索引。
+
+`source` 只有 Civitai 链接导入的记录才有，结构是
+`{ type:'civitai', id, pageUrl, username, baseModel, width, height }`，
+普通图片导入不写这个字段（不给几万张本地图各加一个 `null` 把备份撑大）。
 
 ### 种子分类
 
@@ -374,6 +411,7 @@ prompt-vault/
    ├─ png-meta.js          PNG 内嵌提示词提取（tEXt / zTXt / iTXt）
    ├─ docx-import.js       Word 解析与图文配对（手写 ZIP + XML，零依赖）
    ├─ auto-classify.js     按提示词文本推断分类（纯函数，可独立测试）
+   ├─ civitai.js           Civitai 链接解析 / 接口拉取 / 参数拼装（纯函数 + 网络）
    └─ views/
       ├─ sidebar.js        左栏分类树与模块入口
       ├─ gallery.js        图库网格（分页 + 剔除重复）
