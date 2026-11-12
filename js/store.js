@@ -75,7 +75,7 @@ export const state = {
   /** 图库总页数 */
   galleryPages: 0,
   dbList: [],
-  counts: { total: 0, favorite: 0, uncategorized: 0, byCategory: {}, bySub: {} }
+  counts: { total: 0, favorite: 0, uncategorized: 0, noPrompt: 0, byCategory: {}, bySub: {} }
 };
 
 /* ------------------------------------------------------------ 订阅广播 */
@@ -368,6 +368,16 @@ export function sortList(list, key, dir) {
 
 /* ------------------------------------------------------------ 派生计算 */
 
+/**
+ * 是否带有正向提示词。
+ *
+ * 只有空白字符也算「没有」——很多工具导出时会留一个换行或空格，
+ * 按 length 判断会让这批图漏在筛选外。
+ */
+export function hasPromptText(image) {
+  return Boolean(String((image && image.positive) || '').trim());
+}
+
 function computeGallery() {
   const q = state.search.trim();
   let list;
@@ -379,6 +389,7 @@ function computeGallery() {
     list = state.images.slice();
     if (f.kind === 'favorite') list = list.filter((img) => img.favorite);
     else if (f.kind === 'uncategorized') list = list.filter((img) => getImageCategories(img).length === 0);
+    else if (f.kind === 'noPrompt') list = list.filter((img) => !hasPromptText(img));
     else if (f.kind === 'category') {
       // 多分类：一张图可能挂在多个大类下，只要有一条命中就算
       if (f.subCategoryId) list = list.filter((img) => imageHasCategory(img, null, f.subCategoryId));
@@ -424,8 +435,10 @@ function computeCounts() {
   const bySub = {};
   let favorite = 0;
   let uncategorized = 0;
+  let noPrompt = 0;
   for (const img of state.images) {
     if (img.favorite) favorite += 1;
+    if (!hasPromptText(img)) noPrompt += 1;
     // 多分类：一张图在每个大类下都会给计数 +1
     const cats = getImageCategories(img);
     if (!cats.length) uncategorized += 1;
@@ -434,7 +447,7 @@ function computeCounts() {
       if (c.subCategoryId) bySub[c.subCategoryId] = (bySub[c.subCategoryId] || 0) + 1;
     }
   }
-  state.counts = { total: state.images.length, favorite, uncategorized, byCategory, bySub };
+  state.counts = { total: state.images.length, favorite, uncategorized, noPrompt, byCategory, bySub };
 }
 
 /** 重新计算所有派生数据 */
@@ -480,7 +493,7 @@ export function dbTotalPages() {
 /** 从持久化设置恢复上次选中的分类 */
 function applyStoredCategory(value) {
   if (!value || value === 'all') { state.filter = { kind: 'all', categoryId: null, subCategoryId: null }; return; }
-  if (value === 'favorite' || value === 'uncategorized') {
+  if (value === 'favorite' || value === 'uncategorized' || value === 'noPrompt') {
     state.filter = { kind: value, categoryId: null, subCategoryId: null };
     return;
   }
@@ -503,7 +516,7 @@ function applyStoredCategory(value) {
 function persistCategoryFilter() {
   const f = state.filter;
   let token = 'all';
-  if (f.kind === 'favorite' || f.kind === 'uncategorized') token = f.kind;
+  if (f.kind === 'favorite' || f.kind === 'uncategorized' || f.kind === 'noPrompt') token = f.kind;
   else if (f.kind === 'category') token = f.subCategoryId ? `sub:${f.subCategoryId}` : `cat:${f.categoryId}`;
   state.settings.lastCategory = token;
   db.setMeta('settings', state.settings).catch(() => {});
@@ -528,6 +541,14 @@ export function selectFavorites() {
 /** 左栏：未分类 */
 export function selectUncategorized() {
   state.filter = { kind: 'uncategorized', categoryId: null, subCategoryId: null };
+  state.galleryPage = 1;
+  recompute(); persistCategoryFilter();
+  emit('filter');
+}
+
+/** 左栏：无提示词（正向提示词为空或只有空白） */
+export function selectNoPrompt() {
+  state.filter = { kind: 'noPrompt', categoryId: null, subCategoryId: null };
   state.galleryPage = 1;
   recompute(); persistCategoryFilter();
   emit('filter');

@@ -298,6 +298,7 @@ export function mountGallery(ctx) {
     const f = store.state.filter;
     if (f.kind === 'favorite') return '收藏';
     if (f.kind === 'uncategorized') return '未分类';
+    if (f.kind === 'noPrompt') return '无提示词';
     if (f.kind === 'category') {
       if (f.subCategoryId) {
         const sub = store.categoryById(f.subCategoryId);

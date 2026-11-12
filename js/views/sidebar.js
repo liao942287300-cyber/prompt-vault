@@ -48,6 +48,7 @@ export function mountSidebar(ctx) {
       if (kind === 'all') store.selectAllImages();
       else if (kind === 'favorite') store.selectFavorites();
       else if (kind === 'uncategorized') store.selectUncategorized();
+      else if (kind === 'noPrompt') store.selectNoPrompt();
       return;
     }
 
@@ -116,6 +117,7 @@ export function mountSidebar(ctx) {
     fixed.appendChild(quickItem('all', 'grid', '全部图片', counts.total, onGallery && store.state.filter.kind === 'all'));
     fixed.appendChild(quickItem('favorite', 'heart', '收藏', counts.favorite, onGallery && store.state.filter.kind === 'favorite'));
     fixed.appendChild(quickItem('uncategorized', 'folderOpen', '未分类', counts.uncategorized, onGallery && store.state.filter.kind === 'uncategorized'));
+    fixed.appendChild(quickItem('noPrompt', 'noText', '无提示词', counts.noPrompt, onGallery && store.state.filter.kind === 'noPrompt'));
     scroll.appendChild(fixed);
 
     scroll.appendChild(el('div', { class: 'side-divider' }));
