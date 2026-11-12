@@ -142,9 +142,6 @@ export function mountSidebar(ctx) {
       const collapsed = Boolean((store.state.settings.collapsed || {})[top.id]);
       const children = el('div', { class: `cat-children${collapsed ? ' collapsed' : ''}` });
       for (const sub of subs) children.appendChild(buildSubRow(sub));
-      // 每个一级分类的子列表末尾放一个「新建子分类」——
-      // 比从底部入口再选层级少两步，建二级分类时直接落在这个一级分类下
-      children.appendChild(buildSubAddRow(top.id));
       tree.appendChild(children);
     }
     scroll.appendChild(tree);
@@ -205,6 +202,11 @@ export function mountSidebar(ctx) {
     row.appendChild(el('span', { class: 'cat-count', text: String(store.state.counts.byCategory[category.id] || 0) }));
 
     const actions = el('span', { class: 'cat-actions' });
+    // 加号：在这个一级分类下新建二级分类
+    actions.appendChild(el('button', {
+      class: 'cat-act', type: 'button', title: '新建子分类',
+      dataset: { act: 'new-sub', parent: category.id }, html: icon('plus', 13)
+    }));
     actions.appendChild(el('button', {
       class: 'cat-act', type: 'button', title: '重命名',
       dataset: { act: 'rename', id: category.id }, html: icon('pencil', 13)
@@ -214,20 +216,6 @@ export function mountSidebar(ctx) {
       dataset: { act: 'delete', id: category.id }, html: icon('trash', 13)
     }));
     row.appendChild(actions);
-    return row;
-  }
-
-  /** 子列表末尾的「+ 新建子分类」行 */
-  function buildSubAddRow(parentId) {
-    const row = el('div', { class: 'cat-row lv2 cat-add-row' });
-    const btn = el('button', {
-      class: 'cat-add-btn',
-      type: 'button',
-      dataset: { act: 'new-sub', parent: parentId }
-    });
-    btn.appendChild(el('span', { class: 'cat-add-ico', html: icon('plus', 12) }));
-    btn.appendChild(el('span', { text: '新建子分类' }));
-    row.appendChild(btn);
     return row;
   }
 
@@ -438,31 +426,22 @@ export function mountSidebar(ctx) {
   /**
    * 新建分类。
    *
-   * @param {string} [parentId] 传了就直接在该一级分类下建二级（不弹层级选择，
-   *        颜色继承父级）；不传就是底部入口，弹层级选择问「一级还是二级」。
+   * @param {string} [parentId] 传了就在该一级分类下建二级（颜色继承父级）；
+   *        不传就是底部入口，直接建一级 —— 不再问「要不要挂到某个一级下」，
+   *        建二级的入口是一级分类行上的加号。
    */
   async function handleNewCategory(parentId) {
     const parent = parentId ? store.categoryById(parentId) : null;
 
     const name = await promptDialog(
-      parent ? `在「${parent.name}」下新建二级分类` : '请输入分类名称，例如「电影感」',
+      parent ? `在「${parent.name}」下新建二级分类` : '请输入一级分类名称，例如「电影感」',
       '',
-      { title: parent ? '新建二级分类' : '新建分类', placeholder: '分类名称' }
+      { title: parent ? '新建二级分类' : '新建一级分类', placeholder: '分类名称' }
     );
     if (!name) return;
 
-    let targetParentId = parentId || null;
     let color = parent ? parent.color : null;
-
     if (!parentId) {
-      const tops = store.topCategories();
-      const options = tops.map((c) => ({ value: c.id, label: c.name }));
-      targetParentId = await listDialog('选择层级', options, {
-        label: '作为一级分类，或挂载到某个一级分类下成为二级分类',
-        emptyLabel: '作为一级分类（顶层）'
-      });
-      if (targetParentId === undefined) return;
-
       const picked = await listDialog('选择颜色', COLOR_CHOICES.map((c) => ({ value: c, label: c })), {
         label: '分类色点颜色', defaultValue: '#2f6fed'
       });
@@ -472,8 +451,8 @@ export function mountSidebar(ctx) {
 
     const category = await store.addCategory({
       name,
-      level: targetParentId ? 2 : 1,
-      parentId: targetParentId || null,
+      level: parentId ? 2 : 1,
+      parentId: parentId || null,
       color: color || '#2f6fed'
     });
     toast(`已创建分类「${category.name}」`, 'success');
